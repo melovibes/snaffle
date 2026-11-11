@@ -1,4 +1,15 @@
-# Snaffle
+<p align="center">
+  <img src="icons/logo.png" alt="Snaffle" width="140">
+</p>
+
+<h1 align="center">Snaffle</h1>
+
+<p align="center">
+  Grab any image or video off a page with a key or a click.<br>
+  Rebuild streamed video, capture whole pages, bulk-download the lot.
+</p>
+
+---
 
 A Chrome extension that saves whatever image or video is under your mouse pointer, triggered by a key combination or a mouse click you assign yourself.
 
@@ -137,7 +148,7 @@ Defaults: folder `Snaffle/{host}`, name `{name}.{ext}` — so a photo from examp
 
 ## Icon
 
-`icons/icon512.png` is the master. Regenerate the set with:
+`icons/logo.png` is the master. Regenerate the set with:
 
 ```
 pwsh -File tools/make-icons.ps1

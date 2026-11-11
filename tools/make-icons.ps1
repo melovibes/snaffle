@@ -1,13 +1,13 @@
 # Regenerates icons/icon{16,32,48,128}.png.
 #
-# 32, 48 and 128 are resampled from the 512px master. 16 is drawn from scratch:
+# 32, 48 and 128 are resampled from the 1024px master. 16 is drawn from scratch:
 # the full logo turns to mush at that size, so the toolbar icon is the claw
 # alone, which is the only part with a silhouette that survives 16 pixels.
 #
 #   pwsh -File tools/make-icons.ps1
 
 param(
-    [string]$Master = (Join-Path $PSScriptRoot '..\icons\icon512.png')
+    [string]$Master = (Join-Path $PSScriptRoot '..\icons\logo.png')
 )
 
 Add-Type -AssemblyName System.Drawing
