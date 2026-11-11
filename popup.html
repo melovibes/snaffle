@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Snaffle</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="head">
+    <h1>Snaffle</h1>
+    <label class="toggle">
+      <input type="checkbox" id="enabled">
+      <span class="track"><span class="knob"></span></span>
+    </label>
+  </div>
+
+  <div class="triggers">
+    <div class="trig">
+      <span class="lbl">Key</span>
+      <code id="keyLabel">-</code>
+      <span class="state" id="keyState"></span>
+    </div>
+    <div class="trig">
+      <span class="lbl">Mouse</span>
+      <code id="mouseLabel">-</code>
+      <span class="state" id="mouseState"></span>
+    </div>
+    <div class="trig">
+      <span class="lbl">Page</span>
+      <code id="captureLabel">-</code>
+      <span class="state">shot</span>
+    </div>
+    <div class="trig">
+      <span class="lbl">List</span>
+      <code id="galleryLabel">-</code>
+      <span class="state">media</span>
+    </div>
+  </div>
+
+  <p class="dest">Saving to <code id="dest">Downloads</code></p>
+
+  <button type="button" id="capture">Capture full page</button>
+  <button type="button" id="gallery" class="ghost">List all page media</button>
+  <button type="button" id="open" class="ghost">Open settings</button>
+  <p class="note">Hover over an image or video, then use your trigger. Reload open tabs after installing.</p>
+
+  <script src="popup.js"></script>
+</body>
+</html>

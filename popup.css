@@ -1,0 +1,92 @@
+:root {
+  --bg: #ffffff;
+  --ink: #111827;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2563eb;
+  --code: #f3f4f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171a21;
+    --ink: #e5e7eb;
+    --muted: #9ca3af;
+    --line: #2a2f3a;
+    --accent: #60a5fa;
+    --code: #1f2430;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  width: 280px;
+  margin: 0;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+.head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.head h1 { margin: 0; font-size: 16px; letter-spacing: -0.01em; }
+
+.toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle .track {
+  display: block;
+  width: 38px; height: 22px;
+  border-radius: 11px;
+  background: var(--line);
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.toggle .knob {
+  display: block;
+  width: 18px; height: 18px;
+  margin: 2px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.15s;
+}
+.toggle input:checked + .track { background: var(--accent); }
+.toggle input:checked + .track .knob { transform: translateX(16px); }
+
+.triggers { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.trig { display: flex; align-items: center; gap: 8px; padding: 9px 12px; }
+.trig + .trig { border-top: 1px solid var(--line); }
+.trig .lbl { width: 44px; color: var(--muted); }
+.trig code {
+  flex: 1;
+  background: var(--code);
+  border-radius: 5px;
+  padding: 3px 7px;
+  font: 600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.trig .state { font-size: 11px; color: var(--muted); }
+.trig .state.off { color: #ef4444; }
+
+.dest { margin: 12px 0; color: var(--muted); font-size: 12px; word-break: break-all; }
+.dest code { background: var(--code); border-radius: 4px; padding: 2px 5px; }
+
+button {
+  width: 100%;
+  padding: 9px 12px;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font: 600 13px/1 inherit;
+  cursor: pointer;
+}
+button.ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+  font-weight: 500;
+}
+button:hover { filter: brightness(1.08); }
+button.ghost:hover { border-color: var(--accent); filter: none; }
+
+.note { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
