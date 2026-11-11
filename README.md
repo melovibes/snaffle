@@ -17,7 +17,7 @@ A Chrome extension that saves whatever image or video is under your mouse pointe
 
 1. Open `chrome://extensions`
 2. Turn on **Developer mode** (top right)
-3. Click **Load unpacked** and pick this folder: `E:\claude_me\projects\Snaffle`
+3. Click **Load unpacked** and pick the folder you cloned this into
 4. Reload any tabs that were already open — content scripts are only injected into pages loaded after install
 
 Pin the toolbar icon for a quick on/off switch and a reminder of your triggers.
