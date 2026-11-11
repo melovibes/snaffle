@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Stream fixture</title>
+<style>body{margin:0}video{position:absolute;top:10px;width:200px;height:150px;background:#000}</style></head>
+<body>
+<!-- X-shaped: the poster and the playlist share media id 111. Real fMP4 bytes. -->
+<video id="vx" style="left:10px"  poster="/ext_tw_video_thumb/111/pu/img/p.png"></video>
+<!-- No id anywhere. b is requested before c, so "most recent" is c. -->
+<video id="vb" style="left:230px" poster="/img/200x150/101010/poster-b.png"></video>
+<video id="vc" style="left:450px" poster="/img/200x150/202020/poster-c.png"></video>
+<script>
+  // MediaSource object URLs are what a streaming player hands the <video>;
+  // they cannot be fetched, which is the case the extension has to handle.
+  for (const v of document.querySelectorAll('video')) v.src = URL.createObjectURL(new MediaSource());
+  (async () => {
+    await fetch('/ext_tw_video/111/pu/pl/master.m3u8');
+    await fetch('/hls/b/master.m3u8');
+    await fetch('/hls/c/master.m3u8');
+    document.title = 'Stream fixture ready';
+  })();
+</script>
+</body></html>

@@ -1,0 +1,10 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Split audio fixture</title>
+<style>body{margin:0}video{position:absolute;top:10px;left:10px;width:200px;height:150px;background:#000}</style></head>
+<body>
+<video id="vd" poster="/img/200x150/303030/poster-d.png"></video>
+<script>
+  document.getElementById('vd').src = URL.createObjectURL(new MediaSource());
+  fetch('/hls/d/master-audio.m3u8').then(() => { document.title = 'Split audio fixture ready'; });
+</script>
+</body></html>

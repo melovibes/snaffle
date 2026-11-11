@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Grab fixture</title>
+<style>
+  body { margin: 0; font: 12px sans-serif; }
+  .cell { position: absolute; width: 200px; height: 150px; overflow: hidden; }
+  .cell img, .cell canvas, .cell svg, .cell video, .cell iframe { width: 200px; height: 150px; display: block; border: 0; }
+  /* 4 columns x N rows, 220px x 170px pitch, starting at 10,10 */
+</style>
+</head>
+<body>
+
+<div class="cell" id="plain" style="left:10px;top:10px">
+  <img src="/img/200x150/ff0000/plain.png" alt="plain red">
+</div>
+
+<div class="cell" id="srcset" style="left:230px;top:10px">
+  <img src="/img/200x150/00aa00/small.png"
+       srcset="/img/200x150/00aa00/small.png 200w, /img/800x600/00ff00/large.png 800w" sizes="200px">
+</div>
+
+<!-- A transparent layer over the image, the way X and Instagram cover media. -->
+<div class="cell" id="overlay" style="left:450px;top:10px">
+  <img src="/img/200x150/0000ff/covered.png">
+  <div style="position:absolute;inset:0"></div>
+</div>
+
+<!-- Same, but the overlay's ancestor carries a background texture. The image
+     is a cousin of the overlay, not an ancestor. -->
+<div class="cell" id="overlay-bg" style="left:670px;top:10px;background-image:url(/img/50x50/999999/texture.png)">
+  <div><img src="/img/200x150/aa00aa/cousin.png"></div>
+  <div style="position:absolute;inset:0"></div>
+</div>
+
+<div class="cell" id="linked" style="left:10px;top:180px">
+  <a href="/img/1600x1200/ff00ff/full.png"><img src="/img/200x150/ff00ff/thumb.png"></a>
+</div>
+
+<!-- A tracking parameter that happens to contain an encoded page URL. -->
+<div class="cell" id="unwrap" style="left:230px;top:180px">
+  <img src="/img/200x150/00ffff/tracked.png?ref={{A_ENC}}%2Farticle.html">
+</div>
+
+<!-- A lazy-load style attribute holding an id rather than a URL. -->
+<div class="cell" id="dataattr" style="left:450px;top:180px">
+  <img src="/img/200x150/ffff00/real.png" data-image="12345">
+</div>
+
+<div class="cell" id="bg" style="left:670px;top:180px;background:url(/img/200x150/ff8800/backdrop.png)"></div>
+
+<div class="cell" id="canvas" style="left:10px;top:350px">
+  <canvas width="200" height="150"></canvas>
+</div>
+
+<div class="cell" id="svg" style="left:230px;top:350px">
+  <svg viewBox="0 0 200 150"><rect width="200" height="150" fill="#226622"/><circle cx="100" cy="75" r="40" fill="#fff"/></svg>
+</div>
+
+<div class="cell" id="video" style="left:450px;top:350px">
+  <video src="/media/tiny.mp4" muted preload="metadata"></video>
+</div>
+
+<!-- No extension in the path; the server says it is WebP. -->
+<div class="cell" id="noext" style="left:670px;top:350px">
+  <img src="/noext/200x150/808080?ct=image/webp">
+</div>
+
+<!-- Answers 200 with a web page. -->
+<div class="cell" id="htmlimg" style="left:10px;top:520px;background:#ddd">
+  <img src="/htmlimg/broken.jpg" alt="x">
+</div>
+
+<!-- Same-origin hotlink protection: refused without a Referer. -->
+<div class="cell" id="protected" style="left:230px;top:520px">
+  <img src="/protected/guarded.png">
+</div>
+
+<!-- Cross-origin hotlink protection, no CORS. -->
+<div class="cell" id="xprotected" style="left:450px;top:520px">
+  <img src="{{B}}/protected/far.png">
+</div>
+
+<div class="cell" id="shadow" style="left:670px;top:520px"></div>
+
+<div class="cell" id="navlink" style="left:10px;top:690px">
+  <a href="/article.html"><img src="/img/200x150/123456/inlink.png"></a>
+</div>
+
+<div class="cell" id="frame-same" style="left:230px;top:690px">
+  <iframe src="/pages/inner.html"></iframe>
+</div>
+
+<div class="cell" id="frame-cross" style="left:450px;top:690px">
+  <iframe src="{{B}}/pages/inner.html"></iframe>
+</div>
+
+<div class="cell" id="empty" style="left:670px;top:690px;outline:1px dashed #aaa">nothing here</div>
+
+<input id="field" style="position:absolute;left:10px;top:860px;width:200px">
+
+<script>
+  const c = document.querySelector('#canvas canvas').getContext('2d');
+  c.fillStyle = '#663399'; c.fillRect(0, 0, 200, 150);
+  c.fillStyle = '#fff'; c.fillRect(60, 40, 80, 70);
+
+  const host = document.getElementById('shadow');
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = '<img style="width:200px;height:150px;display:block" src="/img/200x150/445566/shadowed.png">';
+</script>
+</body>
+</html>

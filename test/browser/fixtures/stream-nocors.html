@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>No-CORS stream fixture</title>
+<style>body{margin:0}video{position:absolute;top:10px;left:10px;width:200px;height:150px;background:#000}</style></head>
+<body>
+<video id="ve" poster="/img/200x150/404040/poster-e.png"></video>
+<script>
+  document.getElementById('ve').src = URL.createObjectURL(new MediaSource());
+  // Cross-origin and without CORS headers: the page itself cannot read these.
+  fetch('{{B}}/hlsnocors/e/master.m3u8', { mode: 'no-cors' }).then(() => { document.title = 'No-CORS stream fixture ready'; });
+</script>
+</body></html>
