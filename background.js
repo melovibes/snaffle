@@ -1,68 +1,15 @@
-/* Snaffle - service worker: filename building, downloads, context menu. */
+/* Snaffle - service worker. Decides what gets downloaded and where, and
+   coordinates the pieces that do the work: the downloads API, the offscreen
+   document (large files and streamed video), and the content scripts. */
 
-const DEFAULTS = {
-  enabled: true,
-  key: { enabled: true, code: 'KeyS', label: 'Alt + S', ctrl: false, alt: true, shift: false, meta: false },
-  mouse: { enabled: true, button: 1, label: 'Alt + Middle click', ctrl: false, alt: true, shift: false, meta: false },
-  captureKey: { enabled: true, code: 'KeyS', label: 'Alt + Shift + S', ctrl: false, alt: true, shift: true, meta: false },
-  galleryKey: { enabled: true, code: 'KeyI', label: 'Alt + Shift + I', ctrl: false, alt: true, shift: true, meta: false },
-  folder: 'Snaffle/{host}',
-  template: '{name}.{ext}',
-  captureFormat: 'png',
-  captureQuality: 92,
-  captureHideFixed: true,
-  captureFullWidth: true,
-  galleryMinSize: 80,
-  upgrade: true,
-  preferLink: true,
-  streamAssembly: true,
-  posterFallback: true,
-  saveAs: false,
-  toast: true,
-  outline: false,
-  contextMenu: true
-};
+importScripts('shared.js');
+const S = SnaffleShared;
 
-const MAX_PROXY_BYTES = 60 * 1024 * 1024;
-
-function merge(base, over) {
-  const out = Object.assign({}, base);
-  for (const k of Object.keys(over || {})) {
-    const v = over[k];
-    if (v && typeof v === 'object' && !Array.isArray(v) && typeof base[k] === 'object') out[k] = merge(base[k], v);
-    else if (v !== undefined) out[k] = v;
-  }
-  return out;
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function getCfg() {
   const s = await chrome.storage.sync.get('cfg');
-  return merge(DEFAULTS, s.cfg || {});
-}
-
-/* ------------------------------------------------------------- filenames */
-
-const pad = (n) => String(n).padStart(2, '0');
-
-function sanitizeSegment(s) {
-  return String(s || '')
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/^[.\s]+|[.\s]+$/g, '')
-    .slice(0, 100);
-}
-
-function applyTemplate(tpl, tok, index) {
-  const d = new Date();
-  const map = {
-    name: tok.name, ext: tok.ext, host: tok.host, title: tok.title, alt: tok.alt, kind: tok.kind,
-    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
-    time: `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
-    datetime: `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
-    ts: String(Date.now()),
-    index: String(index).padStart(4, '0')
-  };
-  return String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (k in map ? (map[k] == null ? '' : map[k]) : m));
+  return S.effective(s.cfg);
 }
 
 async function nextIndex() {
@@ -72,29 +19,16 @@ async function nextIndex() {
   return n;
 }
 
-async function buildFilename(rawTok, cfg, index) {
-  const c = cfg || await getCfg();
-  const idx = index || await nextIndex();
-  // An empty {name} would collapse the template to a bare extension.
-  const tok = Object.assign({}, rawTok);
-  if (!tok.name) tok.name = tok.host || 'media';
+async function buildFilename(tok, cfg, index) {
+  return S.buildPath(tok, cfg || await getCfg(), index || await nextIndex());
+}
 
-  let name = applyTemplate(c.template || '{name}.{ext}', tok, idx);
-  name = name.split('/').map(sanitizeSegment).filter(Boolean).join('/');
-  if (!name) name = `${tok.host || 'media'}-${idx}.${tok.ext}`;
-  if (!/\.[a-z0-9]{1,5}$/i.test(name)) name += '.' + tok.ext;
-
-  const folder = applyTemplate(c.folder || '', tok, idx)
-    .split('/').map(sanitizeSegment).filter(Boolean).join('/');
-
-  return folder ? folder + '/' + name : name;
+function toastTab(tabId, text, kind) {
+  if (tabId == null || tabId < 0) return;
+  chrome.tabs.sendMessage(tabId, { type: 'toast', text, kind }, { frameId: 0 }, () => void chrome.runtime.lastError);
 }
 
 /* ------------------------------------------------------------- downloads */
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const pending = new Map(); // downloadId -> { tabId, frameId, url, filename }
 
 function startDownload(opts) {
   return new Promise((resolve) => {
@@ -118,22 +52,6 @@ async function discard(id) {
   await quiet((cb) => chrome.downloads.erase({ id }, cb));
 }
 
-const MIME_EXT = {
-  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
-  'image/avif': 'avif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/x-icon': 'ico',
-  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
-  'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/ogg': 'ogg'
-};
-const cleanMime = (m) => String(m || '').toLowerCase().split(';')[0].trim();
-
-// Text is never the picture or video someone pointed at. SVG is the one image
-// type that calls itself XML.
-function notMedia(mime) {
-  const m = cleanMime(mime);
-  if (!m || /svg/.test(m)) return false;
-  return /^text\/|html|json|xml|javascript/.test(m);
-}
-
 const WHY = {
   SERVER_FORBIDDEN: 'the site refused the download',
   SERVER_UNAUTHORIZED: 'the site wants a sign-in',
@@ -149,23 +67,12 @@ const WHY = {
 // renamed once the server has said what it really is.
 const wanted = new Map();
 
-// The extension a file should carry, given what the server says it is. A .jpg
-// address that serves WebP is common, and the file should say what it holds.
-function nameForMime(filename, mime) {
-  const real = MIME_EXT[cleanMime(mime)];
-  if (!real) return filename;
-  const had = (/\.([a-z0-9]{1,5})$/i.exec(filename) || [])[1] || '';
-  const same = had.toLowerCase() === real || (/^jpe?g$/i.test(had) && real === 'jpg');
-  if (same) return filename;
-  return had ? filename.slice(0, -had.length) + real : filename + '.' + real;
-}
-
 // Runs for every download in the browser once its headers are in. Ours are
 // the only ones touched; anything else is left to Chrome and other extensions.
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   const w = item.byExtensionId === chrome.runtime.id ? wanted.get(item.url) : null;
   if (!w) return;
-  w.finalName = nameForMime(w.filename, item.mime);
+  w.finalName = S.nameForMime(w.filename, item.mime);
   suggest({ filename: w.finalName, conflictAction: 'uniquify' });
 });
 
@@ -181,14 +88,29 @@ async function verdict(id, waitForDialog) {
       if (item.error === 'USER_CANCELED') return { ok: false, cancelled: true, error: 'cancelled' };
       return { ok: false, error: WHY[item.error] || String(item.error || 'the download was interrupted').toLowerCase() };
     }
-    if (item.mime && notMedia(item.mime)) {
-      return { ok: false, error: 'the site sent a web page instead of a file' };
-    }
-    if (item.state === 'complete') return { ok: true, mime: item.mime };
-    if (item.bytesReceived > 0 && item.mime) return { ok: true, running: true, mime: item.mime };
+    if (item.mime && S.notMedia(item.mime)) return { ok: false, error: 'the site sent a web page instead of a file' };
+    if (item.state === 'complete') return { ok: true };
+    if (item.bytesReceived > 0 && item.mime) return { ok: true, running: true };
     await sleep(120);
   }
   return { ok: true, running: true };
+}
+
+// Downloads that passed their first check but are still arriving. Kept in
+// session storage because the service worker can be stopped before they end.
+async function remember(id, info) {
+  const s = await chrome.storage.session.get('pending');
+  const all = s.pending || {};
+  all[id] = info;
+  await chrome.storage.session.set({ pending: all });
+}
+
+async function recall(id) {
+  const s = await chrome.storage.session.get('pending');
+  const all = s.pending || {};
+  const info = all[id];
+  if (info) { delete all[id]; await chrome.storage.session.set({ pending: all }); }
+  return info || null;
 }
 
 async function tryDownload(url, filename, cfg, sender) {
@@ -204,7 +126,7 @@ async function tryDownload(url, filename, cfg, sender) {
     }
     // Still arriving: keep watching, so a late failure is reported too.
     if (v.running) {
-      pending.set(res.id, { tabId: sender.tab ? sender.tab.id : null, frameId: sender.frameId, url, filename: finalName });
+      await remember(res.id, { tabId: sender.tab ? sender.tab.id : null, frameId: sender.frameId, url, filename: finalName });
     }
     return { ok: true, id: res.id, filename: finalName };
   } finally {
@@ -214,12 +136,10 @@ async function tryDownload(url, filename, cfg, sender) {
 
 // A download that passed its first check can still die part-way. Tell the tab,
 // which retries with the page's own credentials and reports the real outcome.
-chrome.downloads.onChanged.addListener((delta) => {
-  const info = pending.get(delta.id);
-  if (!info || !delta.state) return;
-  if (delta.state.current === 'complete') { pending.delete(delta.id); return; }
-  if (delta.state.current !== 'interrupted') return;
-  pending.delete(delta.id);
+chrome.downloads.onChanged.addListener(async (delta) => {
+  if (!delta.state || delta.state.current === 'in_progress') return;
+  const info = await recall(delta.id);
+  if (!info || delta.state.current !== 'interrupted') return;
   const err = (delta.error && delta.error.current) || '';
   if (err === 'USER_CANCELED' || info.tabId == null) return;
   const msg = { type: 'downloadFailed', url: info.url, filename: info.filename, error: WHY[err] || '' };
@@ -243,52 +163,91 @@ async function handleGrab(msg, sender) {
   return last;
 }
 
-// Bytes a page handed over as a data URL: an encoded canvas, an inline SVG, a
-// file the page fetched itself. Saved here so the folder setting applies.
-async function saveData(msg) {
+/* ---------------------------------------------------- offscreen document */
+
+// One hidden extension page does the work a service worker cannot: it can
+// hold a blob URL, and it stays alive for a download that takes minutes.
+let opening = null;
+
+async function ensureOffscreen() {
+  const url = chrome.runtime.getURL('offscreen.html');
+  const existing = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [url] });
+  if (existing.length) return;
+  if (!opening) {
+    opening = chrome.offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: ['BLOBS'],
+      justification: 'Assemble streamed video and hold large files as blobs so they can be saved into the chosen folder.'
+    }).finally(() => { opening = null; });
+  }
+  await opening;
+}
+
+async function toOffscreen(msg) {
+  await ensureOffscreen();
+  return new Promise((res) => {
+    chrome.runtime.sendMessage(msg, (r) => {
+      if (chrome.runtime.lastError) res({ ok: false, error: 'the worker page did not answer' });
+      else res(r);
+    });
+  });
+}
+
+// Close the worker page once it holds nothing, so it does not sit in memory.
+async function closeOffscreenIfIdle() {
+  try {
+    const url = chrome.runtime.getURL('offscreen.html');
+    const existing = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'], documentUrls: [url] });
+    if (!existing.length) return;
+    const state = await new Promise((res) => chrome.runtime.sendMessage({ type: 'os:busy' }, (r) => { void chrome.runtime.lastError; res(r); }));
+    if (state && !state.busy) await chrome.offscreen.closeDocument();
+  } catch (_) {}
+}
+
+// Download a blob the worker page is holding, then let it go.
+async function saveBlobUrl(url, filename, cfg) {
+  try {
+    const res = await startDownload({ url, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
+    if (!res.ok) return { ok: false, error: res.error };
+    const deadline = Date.now() + (cfg.saveAs ? 10 * 60000 : 5 * 60000);
+    while (Date.now() < deadline) {
+      const item = await findDownload(res.id);
+      if (!item) return { ok: false, error: 'the download disappeared' };
+      if (item.state === 'interrupted') {
+        return { ok: false, cancelled: item.error === 'USER_CANCELED', error: WHY[item.error] || 'the browser would not save it' };
+      }
+      if (item.state === 'complete') return { ok: true, filename };
+      await sleep(100);
+    }
+    return { ok: false, error: 'saving took too long' };
+  } finally {
+    await toOffscreen({ type: 'os:revoke', url });
+    closeOffscreenIfIdle();
+  }
+}
+
+// Bytes a page pushed to the worker page in chunks: a canvas, a screenshot, a
+// file the page fetched with its own credentials.
+async function blobSave(msg) {
   const cfg = await getCfg();
   const filename = msg.filename
-    ? String(msg.filename).split('/').map(sanitizeSegment).filter(Boolean).join('/')
+    ? String(msg.filename).split('/').map(S.sanitizeSegment).filter(Boolean).join('/')
     : await buildFilename(msg.tokens, cfg);
-  const res = await startDownload({ url: msg.dataUrl, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
-  if (!res.ok) return { ok: false, error: res.error };
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    const item = await findDownload(res.id);
-    if (!item || item.state === 'interrupted') return { ok: false, error: 'the browser would not save it' };
-    if (item.state === 'complete') return { ok: true, filename };
-    await sleep(100);
-  }
-  return { ok: true, filename };
+  const sealed = await toOffscreen({ type: 'os:seal', id: msg.id, mime: msg.mime });
+  if (!sealed || !sealed.ok) return { ok: false, error: (sealed && sealed.error) || 'the file could not be assembled' };
+  return saveBlobUrl(sealed.url, filename, cfg);
 }
 
-/* Last resort: fetch from the worker (no CORS limits) and save as a data URL. */
-function toBase64(buf) {
-  const bytes = new Uint8Array(buf);
-  let s = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(s);
-}
-
-async function handleProxyGrab(msg) {
-  try {
-    const r = await fetch(msg.url, { credentials: 'omit' });
-    if (!r.ok) return { ok: false, error: r.status === 403 ? 'the site refused the download' : 'the site answered ' + r.status };
-    const buf = await r.arrayBuffer();
-    if (!buf.byteLength) return { ok: false, error: 'the site sent an empty file' };
-    if (buf.byteLength > MAX_PROXY_BYTES) return { ok: false, error: 'the file is too large for the fallback path' };
-    const type = r.headers.get('content-type') || 'application/octet-stream';
-    if (notMedia(type)) return { ok: false, error: 'the site sent a web page instead of a file' };
-    const dataUrl = `data:${type.split(';')[0]};base64,` + toBase64(buf);
-    const filename = String(msg.filename || 'download').split('/').map(sanitizeSegment).filter(Boolean).join('/');
-    const res = await startDownload({ url: dataUrl, filename, conflictAction: 'uniquify' });
-    return res.ok ? { ok: true, filename } : { ok: false, error: res.error };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  }
+// Last resort for a file the browser's downloader and the page were both
+// refused: fetch it from the worker page, which sends no page cookies, and
+// save it. The bytes go to disk only; nothing is returned to the page.
+async function proxyGrab(msg) {
+  if (!/^https?:\/\//i.test(msg.url || '')) return { ok: false, error: 'not a web address' };
+  const cfg = await getCfg();
+  const got = await toOffscreen({ type: 'os:fetch', url: msg.url });
+  if (!got || !got.ok) { closeOffscreenIfIdle(); return { ok: false, error: (got && got.error) || 'the site could not be reached' }; }
+  const asked = String(msg.filename || 'download').split('/').map(S.sanitizeSegment).filter(Boolean).join('/');
+  return saveBlobUrl(got.url, S.nameForMime(asked, got.mime), cfg);
 }
 
 /* ----------------------------------------------- streamed video (sniffer) */
@@ -298,6 +257,7 @@ async function handleProxyGrab(msg) {
 // worker going idle, which it will long before the user hits the trigger.
 const STREAMS_KEY = 'streams';
 const MAX_STREAMS = 120;
+const STREAM_TTL = 2 * 60 * 60 * 1000;
 let streams = null;
 
 const X_MEDIA_ID = /\/(?:ext_tw_video|amplify_video|tweet_video)(?:_thumb)?\/(\d+)\//;
@@ -310,8 +270,6 @@ async function loadStreams() {
   return streams;
 }
 
-const STREAM_TTL = 2 * 60 * 60 * 1000;
-
 async function recordStream(d) {
   const s = await loadStreams();
   const cutoff = Date.now() - STREAM_TTL;
@@ -321,29 +279,24 @@ async function recordStream(d) {
     url: d.url,
     id: (X_MEDIA_ID.exec(d.url) || [])[1] || '',
     tabId: d.tabId,
-    playlist: /\.m3u8(\?|$)/i.test(d.url),
+    playlist: /\.m3u8$/i.test(new URL(d.url).pathname),
     ts: Date.now()
   });
   if (s.list.length > MAX_STREAMS) s.list = s.list.slice(-MAX_STREAMS);
   await chrome.storage.session.set({ [STREAMS_KEY]: s });
 }
 
-// Playlists the extension is about to fetch for itself, so the sniffer does
-// not record them as if the page had asked for another video.
-const ownFetches = new Map(); // url -> expiry
-
-function isOwnFetch(url) {
-  const until = ownFetches.get(url);
-  if (!until) return false;
-  if (until < Date.now()) { ownFetches.delete(url); return false; }
-  return true;
-}
-
 chrome.webRequest.onBeforeRequest.addListener((d) => {
   // Playlists and whole files only - never the thousands of segment requests.
-  if (!/\.(m3u8|mp4)(\?|$)/i.test(d.url)) return;
-  // Requests with no tab are the service worker's own; announced ones are ours too.
-  if (d.tabId < 0 || isOwnFetch(d.url)) return;
+  // Judged on the path: a page address that merely mentions a playlist in its
+  // query string is not one, and neither is a navigation.
+  if (d.type === 'main_frame' || d.type === 'sub_frame') return;
+  let file = '';
+  try { file = new URL(d.url).pathname; } catch (_) { return; }
+  if (!/\.(m3u8|mp4)$/i.test(file)) return;
+  // A request with no tab is the extension's own, from the worker page while
+  // it rebuilds a stream. Only what pages ask for is evidence of a video.
+  if (d.tabId < 0) return;
   recordStream(d).catch(() => {});
 }, { urls: ['*://*/*.m3u8*', '*://video.twimg.com/*'] });
 
@@ -364,33 +317,118 @@ function streamGroups(entries) {
   return groups.sort((x, y) => x.ts - y.ts);
 }
 
-async function findStream(msg, sender) {
+async function findStream(mediaId, tabId) {
   const s = await loadStreams();
-  const tabId = sender.tab ? sender.tab.id : -1;
   const inTab = s.list.filter((e) => e.tabId === tabId);
 
   // X repeats the same media id in the poster and in the video URL, so this is
   // an exact match even with a dozen videos in one timeline.
-  if (msg.mediaId) {
-    const hits = (inTab.length ? inTab : s.list).filter((e) => e.id === msg.mediaId);
-    const best = hits.find((e) => e.playlist) || hits[hits.length - 1];
+  if (mediaId) {
+    const hits = (inTab.length ? inTab : s.list).filter((e) => e.id === mediaId);
+    const group = streamGroups(hits.filter((e) => e.playlist)).pop();
+    const best = group || hits[hits.length - 1];
     return best ? { url: best.url } : { url: '' };
   }
   // No id to match on: the most recent stream this tab asked for. With more
-  // than one stream on the page that is a guess, and the caller says so.
+  // than one stream on the page that is a guess, and the user is told so.
   const groups = streamGroups(inTab.filter((e) => e.playlist));
   const recent = groups[groups.length - 1];
   return recent ? { url: recent.url, guessed: true, streams: groups.length } : { url: '' };
 }
 
-async function proxyFetch(msg) {
+/* ------------------------------------------------- streamed video (jobs) */
+
+// Some CDNs only serve video to requests that carry the page's address. The
+// worker page cannot set a Referer itself, so a session rule adds it to the
+// extension's own requests to that site for the length of the job.
+async function setReferer(playlistUrl, pageUrl) {
   try {
-    const r = await fetch(msg.url, { credentials: 'omit' });
-    if (!r.ok) return { ok: false, error: 'HTTP ' + r.status };
-    return { ok: true, b64: toBase64(await r.arrayBuffer()), type: r.headers.get('content-type') || '' };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
+    const host = new URL(playlistUrl).hostname;
+    const site = /^[\d.]+$/.test(host) || !host.includes('.') ? host : host.split('.').slice(-2).join('.');
+    const id = 1 + (Date.now() % 1000000000);
+    await chrome.declarativeNetRequest.updateSessionRules({
+      removeRuleIds: [id],
+      addRules: [{
+        id, priority: 1,
+        action: { type: 'modifyHeaders', requestHeaders: [{ header: 'Referer', operation: 'set', value: new URL(pageUrl).href }] },
+        condition: { requestDomains: [site], initiatorDomains: [chrome.runtime.id], resourceTypes: ['xmlhttprequest', 'media', 'other'] }
+      }]
+    });
+    return id;
+  } catch (_) {
+    return 0;
   }
+}
+
+const clearReferer = (id) => {
+  if (id) chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [id] }).catch(() => {});
+};
+
+async function grabStream(msg, sender) {
+  if (!sender.tab) return { found: false };
+  const tabId = sender.tab.id;
+  const found = await findStream(msg.mediaId || '', tabId);
+  if (!found.url) return { found: false };
+
+  const guess = found.guessed && found.streams > 1
+    ? ' - best guess: this page loaded ' + found.streams + ' streams and none could be matched to this video'
+    : '';
+
+  // A whole file was served after all: the ordinary download path.
+  if (/\.mp4(\?|$)/i.test(found.url)) {
+    const tokens = Object.assign({}, msg.tokens, { ext: 'mp4' });
+    const res = await handleGrab({ candidates: [{ url: found.url, tokens }] }, sender);
+    return Object.assign({ found: true, direct: true, url: found.url, guess }, res);
+  }
+
+  const id = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const ruleId = await setReferer(found.url, msg.pageUrl || sender.tab.url || found.url);
+  // Everything needed to finish the job travels with it, because this service
+  // worker may have been stopped and restarted by the time it is done.
+  const job = { id, url: found.url, tabId, meta: { tokens: msg.tokens, guess, ruleId } };
+  const ack = await toOffscreen({ type: 'os:stream', job });
+  if (!ack || !ack.ok) { clearReferer(ruleId); return { found: true, started: false, error: 'the worker page did not start' }; }
+  // Every frame, so Escape cancels from wherever keyboard focus happens to be.
+  chrome.tabs.sendMessage(tabId, { type: 'streamStarted' }, () => void chrome.runtime.lastError);
+  return { found: true, started: true, id };
+}
+
+async function finishStream(msg) {
+  const meta = msg.meta || {};
+  const tabId = msg.tabId;
+  clearReferer(meta.ruleId);
+  const ended = () => {
+    if (tabId != null) chrome.tabs.sendMessage(tabId, { type: 'streamEnded' }, () => void chrome.runtime.lastError);
+    closeOffscreenIfIdle();
+  };
+
+  if (msg.cancelled) { toastTab(tabId, 'Cancelled.', 'warn'); ended(); return; }
+  if (!msg.ok) {
+    const why = String(msg.error || 'the stream could not be read');
+    toastTab(tabId, /^[A-Z]/.test(why) ? why : 'Could not save this video: ' + why, 'err');
+    ended();
+    return;
+  }
+
+  const cfg = await getCfg();
+  const tok = Object.assign({}, meta.tokens, {
+    name: ((meta.tokens && meta.tokens.name) || 'video') + (msg.height ? '-' + msg.height + 'p' : ''),
+    ext: msg.ext || 'mp4'
+  });
+  const filename = await buildFilename(tok, cfg);
+  const res = await saveBlobUrl(msg.url, filename, cfg);
+  if (!res.ok) {
+    if (!res.cancelled) toastTab(tabId, 'Could not save this video: ' + res.error, 'err');
+    ended();
+    return;
+  }
+
+  const notes =
+    (msg.silent ? ' - no sound: the audio track could not be included' : '') +
+    (msg.joined ? ' - saved as joined segments, so some players may show the wrong length' : '') +
+    (meta.guess || '');
+  toastTab(tabId, 'Saved ' + filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok');
+  ended();
 }
 
 /* ------------------------------------------------- screenshots and bulk ops */
@@ -428,8 +466,7 @@ async function collectMedia(sender) {
   const token = Date.now() + ':' + sender.tab.id;
   mediaBuckets.set(token, []);
   try {
-    chrome.tabs.sendMessage(sender.tab.id, { type: 'collectMediaFrame', token },
-      () => void chrome.runtime.lastError);
+    chrome.tabs.sendMessage(sender.tab.id, { type: 'collectMediaFrame', token }, () => void chrome.runtime.lastError);
     await sleep(700);
     const seen = new Set();
     const items = [];
@@ -452,10 +489,7 @@ async function bulkGrab(msg, sender) {
     const res = await startDownload({ url: item.url, filename, conflictAction: 'uniquify', saveAs: false });
     if (res.ok) {
       saved++;
-      pending.set(res.id, {
-        tabId: sender.tab ? sender.tab.id : null,
-        frameId: 0, url: item.url, filename
-      });
+      await remember(res.id, { tabId: sender.tab ? sender.tab.id : null, frameId: 0, url: item.url, filename });
     } else {
       failed++;
     }
@@ -464,56 +498,113 @@ async function bulkGrab(msg, sender) {
   return { ok: true, saved, failed };
 }
 
+/* ----------------------------------------------------- injecting scripts */
+
+const CORE = ['shared.js', 'content.js'];
+
+// Put the content script into a tab that does not have a working one: a tab
+// opened before the extension was installed, or one left with a dead copy by
+// an update. A tab that already has a live copy ignores this.
+async function injectCore(tabId) {
+  await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: CORE });
+}
+
+async function injectEverywhere() {
+  const tabs = await chrome.tabs.query({});
+  for (const t of tabs) {
+    if (t.id == null || t.discarded) continue;
+    injectCore(t.id).catch(() => {});   // chrome:// pages and the like refuse
+  }
+}
+
+// The screenshot and media-list code is only loaded into a tab when asked
+// for, rather than into every frame of every page.
+async function runFeature(name, tabId) {
+  if (name !== 'capture' && name !== 'gallery') return { ok: false, error: 'unknown feature' };
+  if (tabId == null) return { ok: false, error: 'no tab' };
+  try {
+    await injectCore(tabId);
+    await chrome.scripting.executeScript({
+      target: name === 'gallery' ? { tabId, allFrames: true } : { tabId, frameIds: [0] },
+      files: [name + '.js']
+    });
+  } catch (_) {
+    return { ok: false, error: 'Snaffle cannot run on this page.' };
+  }
+  await new Promise((res) => chrome.tabs.sendMessage(tabId, { type: name + 'Now' }, { frameId: 0 }, () => { void chrome.runtime.lastError; res(); }));
+  return { ok: true };
+}
+
 /* -------------------------------------------------------------- messages */
+
+const fromWorkerPage = (sender) => !sender.tab && sender.id === chrome.runtime.id;
+
+// One of the extension's own pages (the popup, the options page), as opposed
+// to a content script speaking from inside a web page.
+const fromOwnPage = (sender) => sender.id === chrome.runtime.id &&
+  String(sender.url || '').startsWith(chrome.runtime.getURL(''));
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return false;
-  if (msg.type === 'grab') { handleGrab(msg, sender).then(sendResponse); return true; }
-  if (msg.type === 'proxyGrab') { handleProxyGrab(msg).then(sendResponse); return true; }
-  if (msg.type === 'findStream') { findStream(msg, sender).then(sendResponse); return true; }
-  if (msg.type === 'saveData') { saveData(msg).then(sendResponse); return true; }
-  if (msg.type === 'ownFetch') {
-    for (const u of msg.urls || []) ownFetches.set(u, Date.now() + 30000);
-    sendResponse({ ok: true });
-    return false;
-  }
-  if (msg.type === 'relayGrab') {
-    // Every frame hears this; only the one the pointer is in answers.
-    if (!sender.tab) { sendResponse({ handled: false }); return false; }
-    chrome.tabs.sendMessage(sender.tab.id, { type: 'grabNow' }, (r) => {
-      void chrome.runtime.lastError;
-      sendResponse({ handled: !!(r && r.handled) });
-    });
-    return true;
-  }
-  if (msg.type === 'proxyFetch') { proxyFetch(msg).then(sendResponse); return true; }
-  if (msg.type === 'captureViewport') { captureViewport(sender).then(sendResponse); return true; }
-  if (msg.type === 'collectMedia') { collectMedia(sender).then(sendResponse); return true; }
-  if (msg.type === 'bulkGrab') { bulkGrab(msg, sender).then(sendResponse); return true; }
-  if (msg.type === 'mediaFound') {
-    const bucket = mediaBuckets.get(msg.token);
-    if (bucket) bucket.push.apply(bucket, msg.items || []);
-    sendResponse({ ok: true });
-    return false;
-  }
-  if (msg.type === 'badge') {
-    setBadge(msg.text, sender.tab ? sender.tab.id : undefined);
-    sendResponse({ ok: true });
-    return false;
-  }
-  if (msg.type === 'relayTop') {
-    if (sender.tab) {
-      chrome.tabs.sendMessage(sender.tab.id, { type: msg.action, text: msg.text, kind: msg.kind }, { frameId: 0 },
-        () => void chrome.runtime.lastError);
+  // The popup names the tab it wants acted on. A content script cannot: it
+  // only ever speaks for the tab it is in.
+  const tabId = fromOwnPage(sender) && msg.tabId != null ? msg.tabId : (sender.tab ? sender.tab.id : null);
+
+  switch (msg.type) {
+    case 'grab': handleGrab(msg, sender).then(sendResponse); return true;
+    case 'grabStream': grabStream(msg, sender).then(sendResponse); return true;
+    case 'blobOpen': ensureOffscreen().then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false })); return true;
+    case 'blobSave': blobSave(msg).then(sendResponse); return true;
+    case 'proxyGrab': proxyGrab(msg).then(sendResponse); return true;
+    case 'captureViewport': captureViewport(sender).then(sendResponse); return true;
+    case 'collectMedia': collectMedia(sender).then(sendResponse); return true;
+    case 'bulkGrab': bulkGrab(msg, sender).then(sendResponse); return true;
+    case 'feature': runFeature(msg.name, tabId).then(sendResponse); return true;
+    case 'buildName':
+      buildFilename(msg.tokens).then((f) => sendResponse({ ok: true, filename: f.split('/').pop(), path: f }));
+      return true;
+
+    case 'cancelStreams':
+      if (sender.tab) toOffscreen({ type: 'os:cancel', tabId: sender.tab.id });
+      sendResponse({ ok: true });
+      return false;
+
+    case 'mediaFound': {
+      const bucket = mediaBuckets.get(msg.token);
+      if (bucket) bucket.push.apply(bucket, msg.items || []);
+      sendResponse({ ok: true });
+      return false;
     }
-    sendResponse({ ok: true });
-    return false;
+    case 'badge':
+      setBadge(msg.text, sender.tab ? sender.tab.id : undefined);
+      sendResponse({ ok: true });
+      return false;
+
+    case 'relayTop':
+      if (sender.tab) {
+        chrome.tabs.sendMessage(sender.tab.id, { type: msg.action, text: msg.text, kind: msg.kind }, { frameId: 0 },
+          () => void chrome.runtime.lastError);
+      }
+      sendResponse({ ok: true });
+      return false;
+
+    case 'relayGrab':
+      // Every frame hears this; only the one the pointer is in answers.
+      if (!sender.tab) { sendResponse({ handled: false }); return false; }
+      chrome.tabs.sendMessage(sender.tab.id, { type: 'grabNow' }, (r) => {
+        void chrome.runtime.lastError;
+        sendResponse({ handled: !!(r && r.handled) });
+      });
+      return true;
+
+    // From the worker page. A tab cannot forge these: its messages carry a tab.
+    case 'os:progress':
+      if (fromWorkerPage(sender)) toastTab(msg.tabId, 'Downloading video: ' + msg.pct + '% (Esc to cancel)', 'warn');
+      return false;
+    case 'os:done':
+      if (fromWorkerPage(sender)) finishStream(msg);
+      return false;
   }
-  if (msg.type === 'buildName') {
-    buildFilename(msg.tokens).then((f) => sendResponse({ ok: true, filename: f.split('/').pop(), path: f }));
-    return true;
-  }
-  if (msg.type === 'getCfg') { getCfg().then((c) => sendResponse(c)); return true; }
   return false;
 });
 
@@ -553,19 +644,21 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     tokens: { name, ext, host, title: (tab && tab.title) || '', alt: '', kind: info.mediaType || 'image' }
   }, { tab, frameId: info.frameId });
 
-  if (tab && tab.id != null) {
-    chrome.tabs.sendMessage(tab.id, {
-      type: 'toast',
-      text: res.ok ? 'Saved ' + res.filename : 'Could not download: ' + res.error,
-      kind: res.ok ? 'ok' : 'err'
-    }, () => void chrome.runtime.lastError);
+  if (tab && tab.id != null && !res.cancelled) {
+    toastTab(tab.id, res.ok ? 'Saved ' + res.filename : 'Could not save this: ' + res.error, res.ok ? 'ok' : 'err');
   }
 });
 
+/* -------------------------------------------------------------- lifecycle */
+
 chrome.runtime.onInstalled.addListener(async () => {
+  // Early versions wrote every default into storage. Keep only what the user
+  // actually changed, so defaults can move on without them.
   const s = await chrome.storage.sync.get('cfg');
-  if (!s.cfg) await chrome.storage.sync.set({ cfg: DEFAULTS });
+  if (s.cfg && s.cfg.v !== S.CFG_VERSION) await chrome.storage.sync.set({ cfg: S.toStore(s.cfg) });
   buildMenus();
+  // Tabs that were already open have no content script, or a dead one.
+  injectEverywhere();
 });
 
 chrome.runtime.onStartup.addListener(buildMenus);

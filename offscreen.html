@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Snaffle worker</title>
+</head>
+<body>
+  <!-- Never shown. The service worker opens this document for the jobs it
+       cannot do itself: holding large files as blobs, and rebuilding streamed
+       video. -->
+  <script src="shared.js"></script>
+  <script src="hls.js"></script>
+  <script type="module" src="offscreen.js"></script>
+</body>
+</html>

@@ -1,105 +1,23 @@
 /* Snaffle - options page */
 
-const DEFAULTS = {
-  enabled: true,
-  key: { enabled: true, code: 'KeyS', label: 'Alt + S', ctrl: false, alt: true, shift: false, meta: false },
-  mouse: { enabled: true, button: 1, label: 'Alt + Middle click', ctrl: false, alt: true, shift: false, meta: false },
-  captureKey: { enabled: true, code: 'KeyS', label: 'Alt + Shift + S', ctrl: false, alt: true, shift: true, meta: false },
-  galleryKey: { enabled: true, code: 'KeyI', label: 'Alt + Shift + I', ctrl: false, alt: true, shift: true, meta: false },
-  folder: 'Snaffle/{host}',
-  template: '{name}.{ext}',
-  captureFormat: 'png',
-  captureQuality: 92,
-  captureHideFixed: true,
-  captureFullWidth: true,
-  galleryMinSize: 80,
-  upgrade: true,
-  preferLink: true,
-  streamAssembly: true,
-  posterFallback: true,
-  saveAs: false,
-  toast: true,
-  outline: false,
-  contextMenu: true
-};
-
+const S = SnaffleShared;
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
-const BUTTONS = ['Left click', 'Middle click', 'Right click', 'Back button', 'Forward button'];
 const $ = (id) => document.getElementById(id);
+const keyLabel = (t) => S.keyLabel(t, IS_MAC);
+const mouseLabel = (t) => S.mouseLabel(t, IS_MAC);
 
 const FLAGS = ['enabled', 'upgrade', 'preferLink', 'streamAssembly', 'posterFallback', 'saveAs', 'toast', 'outline', 'contextMenu',
                'captureHideFixed', 'captureFullWidth'];
 
-let cfg = JSON.parse(JSON.stringify(DEFAULTS));
-
-function merge(base, over) {
-  const out = Object.assign({}, base);
-  for (const k of Object.keys(over || {})) {
-    const v = over[k];
-    if (v && typeof v === 'object' && !Array.isArray(v) && typeof base[k] === 'object') out[k] = merge(base[k], v);
-    else if (v !== undefined) out[k] = v;
-  }
-  return out;
-}
-
-function modString(t) {
-  const parts = [];
-  if (t.ctrl) parts.push('Ctrl');
-  if (t.alt) parts.push(IS_MAC ? 'Option' : 'Alt');
-  if (t.shift) parts.push('Shift');
-  if (t.meta) parts.push(IS_MAC ? 'Cmd' : 'Win');
-  return parts;
-}
-
-function keyLabel(t) {
-  const parts = modString(t);
-  let name = t.code || '';
-  if (/^Key[A-Z]$/.test(name)) name = name.slice(3);
-  else if (/^Digit\d$/.test(name)) name = name.slice(5);
-  else if (/^Numpad(.+)$/.test(name)) name = 'Numpad ' + name.slice(6);
-  else if (/^Arrow(.+)$/.test(name)) name = name.slice(5) + ' arrow';
-  parts.push(name || '?');
-  return parts.join(' + ');
-}
-
-function mouseLabel(t) {
-  const parts = modString(t);
-  parts.push(BUTTONS[t.button] || 'Button ' + t.button);
-  return parts.join(' + ');
-}
+let cfg = S.effective(null);
 
 /* --------------------------------------------------------------- preview */
 
-const pad = (n) => String(n).padStart(2, '0');
-
-function sanitizeSegment(s) {
-  return String(s || '')
-    .replace(/[\\/:*?"<>|]/g, '_')
-    .replace(/\s+/g, ' ')
-    .replace(/^[.\s]+|[.\s]+$/g, '')
-    .slice(0, 100);
-}
-
-function applyTemplate(tpl, tok) {
-  const d = new Date();
-  const map = {
-    name: tok.name, ext: tok.ext, host: tok.host, title: tok.title, alt: tok.alt, kind: tok.kind,
-    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
-    time: `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
-    datetime: `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`,
-    ts: String(Date.now()),
-    index: '0042'
-  };
-  return String(tpl || '').replace(/\{(\w+)\}/g, (m, k) => (k in map ? (map[k] == null ? '' : map[k]) : m));
-}
-
 function renderPreview() {
   const tok = { name: 'sunset-over-the-bay', ext: 'jpg', host: 'example.com', title: 'Example page', alt: 'A sunset', kind: 'image' };
-  let name = applyTemplate($('template').value, tok).split('/').map(sanitizeSegment).filter(Boolean).join('/');
-  if (!name) name = 'media.jpg';
-  if (!/\.[a-z0-9]{1,5}$/i.test(name)) name += '.' + tok.ext;
-  const folder = applyTemplate($('folder').value, tok).split('/').map(sanitizeSegment).filter(Boolean).join('/');
-  $('preview').textContent = 'Downloads/' + (folder ? folder + '/' : '') + name;
+  // The same function the downloader uses, so the preview cannot drift from it.
+  const path = S.buildPath(tok, { template: $('template').value, folder: $('folder').value }, 42);
+  $('preview').textContent = 'Downloads/' + path;
 }
 
 /* ------------------------------------------------------------ recorders */
@@ -137,7 +55,6 @@ function bindKeyRecorder(field, btnId, hintId) {
       code: e.code,
       ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey
     };
-    cfg[field].label = keyLabel(cfg[field]);
     stop();
     warnCollisions();
   });
@@ -184,7 +101,6 @@ function bindMouseRecorder() {
       button: e.button,
       ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey, meta: e.metaKey
     };
-    cfg.mouse.label = mouseLabel(cfg.mouse);
     stop();
     if (e.button === 0 && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
       $('mouseHint').textContent = 'Careful: plain left click will trigger on every click you make.';
@@ -224,10 +140,8 @@ function collect() {
   for (const f of FLAGS) cfg[f] = $(f).checked;
   for (const [field, enabledId] of KEY_FIELDS) {
     cfg[field].enabled = $(enabledId).checked;
-    cfg[field].label = keyLabel(cfg[field]);
   }
   cfg.mouse.enabled = $('mouseEnabled').checked;
-  cfg.mouse.label = mouseLabel(cfg.mouse);
   cfg.folder = $('folder').value.trim();
   cfg.template = $('template').value.trim() || '{name}.{ext}';
   cfg.captureFormat = $('captureFormat').value;
@@ -244,14 +158,15 @@ function flashStatus(text) {
 }
 
 async function save() {
-  await chrome.storage.sync.set({ cfg: collect() });
+  // Only what differs from the defaults is stored.
+  await chrome.storage.sync.set({ cfg: S.toStore(collect()) });
   render();
   flashStatus('Saved');
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
   const s = await chrome.storage.sync.get('cfg');
-  cfg = merge(DEFAULTS, s.cfg || {});
+  cfg = S.effective(s.cfg);
   render();
   bindKeyRecorder('key', 'keyRec', 'keyHint');
   bindKeyRecorder('captureKey', 'captureRec', 'captureHint');
@@ -262,8 +177,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('template').addEventListener('input', renderPreview);
   $('save').addEventListener('click', save);
   $('reset').addEventListener('click', async () => {
-    cfg = JSON.parse(JSON.stringify(DEFAULTS));
-    await chrome.storage.sync.set({ cfg });
+    cfg = S.effective(null);
+    await chrome.storage.sync.remove('cfg');
     render();
     flashStatus('Reset');
   });

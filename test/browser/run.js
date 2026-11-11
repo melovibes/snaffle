@@ -18,7 +18,6 @@ const { start } = require('./server');
 
 // Defect id -> the phase that fixes it. See docs/phase0-findings.md.
 const KNOWN_FAILING = {
-  S04: 'phase 2: no muxer, so split-audio streams save without sound',
   C02: 'phase 4: capture trusts devicePixelRatio instead of measuring the shot',
   C03: 'phase 4: fixed elements are hidden before the first shot',
   C04: 'phase 4: inner scrolling containers are not detected',
@@ -26,9 +25,7 @@ const KNOWN_FAILING = {
   L02: 'phase 4: thumbnails load the full-size originals',
   L05: 'phase 4: size filter is not re-applied when dimensions arrive',
   L06: 'phase 3: media list has no keyboard access',
-  P02: 'phase 3: recorded shortcut is not saved until Save is pressed',
-  P05: 'phase 2: defaults are written to storage at install',
-  X02: 'phase 2: service worker fetches any URL it is asked for'
+  P02: 'phase 3: recorded shortcut is not saved until Save is pressed'
 };
 
 const only = process.argv[2] || '';
@@ -259,73 +256,186 @@ const base = (u) => {
   /* ============================================================== stream */
 
   if (!only || only === 'stream') {
-    const page = await h.newPage(A.origin + '/pages/stream.html');
-    await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
-    await sleep(500);
     const piecesOf = (r) => (r.bytes ? r.bytes.toString() : '');
     const streamOf = (r) => (/^\[([a-z0-9]+):/.exec(piecesOf(r)) || [])[1] || (r.bytes ? 'something else (' + r.bytes.length + ' bytes)' : 'nothing');
 
+    // What ffprobe makes of a saved file: tracks, frame counts, size, length.
+    const probe = (bytes) => {
+      const out = path.join(h.work, 'probe-' + Date.now() + '.bin');
+      fs.writeFileSync(out, bytes);
+      try {
+        const raw = execFileSync('ffprobe', ['-v', 'error', '-show_entries',
+          'format=duration,format_name:stream=codec_type,width,height,nb_frames', '-of', 'json', out]).toString();
+        const j = JSON.parse(raw);
+        const v = (j.streams || []).find((s) => s.codec_type === 'video');
+        const a = (j.streams || []).find((s) => s.codec_type === 'audio');
+        return {
+          video: !!v, audio: !!a, height: v ? v.height : 0, frames: v ? parseInt(v.nb_frames || '0', 10) : 0,
+          seconds: parseFloat((j.format || {}).duration || '0'), mp4: /mp4/.test((j.format || {}).format_name || ''),
+          text: (v ? 'video ' + v.width + 'x' + v.height + ' ' + v.nb_frames + ' frames' : 'no video') + ', ' +
+                (a ? 'audio' : 'NO AUDIO') + ', ' + parseFloat((j.format || {}).duration || '0').toFixed(2) + 's'
+        };
+      } catch (e) { return { video: false, audio: false, text: 'ffprobe could not read it' }; }
+    };
+    const whole = (p) => p.video && p.audio && p.mp4 && p.frames === 150 && Math.abs(p.seconds - 6) < 0.3;
+
+    const openStream = async (src) => {
+      const page = await h.newPage(A.origin + '/pages/one-stream.html?src=' + encodeURIComponent(src));
+      await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
+      await sleep(500);
+      return page;
+    };
+
+    const page = await h.newPage(A.origin + '/pages/stream.html');
+    await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
+    await sleep(500);
+
     // Runs first, on a fresh page: the only playlists recorded are the page's own.
     await check('stream', 'S02', 7, 'With no media id and several streams on the page, the user is told the result is a guess', async () => {
-      const r = await grab(page, '#vb', { settle: 15000 });
+      const r = await grab(page, '#vb', { settle: 20000 });
       const warned = /best guess/i.test(r.toast || '');
       return { ok: streamOf(r) === 'b' || warned, observed: 'hovered stream b, saved stream ' + streamOf(r) + '; toast "' + r.toast + '"' };
     });
 
-    await check('stream', 'S01', null, 'X-shaped stream is matched by media id and rebuilt into a playable file', async () => {
-      const r = await grab(page, '#vx', { settle: 15000 });
+    await check('stream', 'S01', null, 'X-shaped stream is matched by media id and rebuilt into a whole MP4, in the folder', async () => {
+      const r = await grab(page, '#vx', { settle: 20000 });
       if (!r.bytes) return { ok: false, observed: describe(r) };
-      const media = path.join(__dirname, 'media');
-      const want = Buffer.concat(['init.mp4', 'seg0.m4s', 'seg1.m4s', 'seg2.m4s'].map((f) => fs.readFileSync(path.join(media, f))));
-      const exact = Buffer.compare(r.bytes, want) === 0;
-      const out = path.join(h.work, 'assembled.mp4');
-      fs.writeFileSync(out, r.bytes);
-      let probe = '';
-      try {
-        probe = execFileSync('ffprobe', ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'csv=p=0', out]).toString().trim().replace(/\s+/g, ' ');
-      } catch (e) { probe = 'ffprobe failed'; }
-      const sound = /video/.test(probe) && /audio/.test(probe) && /6\.\d/.test(probe);
-      return { ok: exact && sound, observed: r.bytes.length + ' bytes, ' + (exact ? 'identical to init+segments' : 'DIFFERENT from init+segments') + '; ffprobe: ' + probe + '; toast "' + r.toast + '"' };
-    });
-
-    await check('stream', 'S06', 8, 'A rebuilt video lands in the configured folder, with a truthful size', async () => {
-      const r = await grab(page, '#vx', { settle: 15000 });
+      const p = probe(r.bytes);
+      const named = /^Saved Snaffle\/127\.0\.0\.1\/video-111-240p\.mp4 \(/.test(r.toast || '');
       const size = (/\(([\d.]+ [KM]B)\)/.exec(r.toast || '') || [])[1] || '';
-      return { ok: filed(r) && size === '101 KB', observed: 'toast "' + r.toast + '"' + (r.anchors.length ? '; saved by page anchor' : '') };
+      const truthful = size === Math.max(1, Math.round(r.bytes.length / 1024)) + ' KB';
+      return { ok: whole(p) && named && truthful && !r.anchors.length, observed: p.text + '; ' + r.bytes.length + ' bytes; toast "' + r.toast + '"' };
     });
 
     // The extension has now fetched playlists of its own. They must not be
     // mistaken for the page's: c is still the last stream the page asked for.
-    await check('stream', 'S03', null, 'After earlier stream downloads, an id-less grab still follows the page, best rendition, pieces in order', async () => {
-      const r = await grab(page, '#vc', { settle: 15000 });
+    // These streams are not real video, so this also exercises the plain
+    // joiner that takes over when the library cannot read a stream.
+    await check('stream', 'S03', null, 'After earlier stream downloads, an id-less grab still follows the page; unreadable streams fall back to joining', async () => {
+      const r = await grab(page, '#vc', { settle: 20000 });
       const want = '[c:hi:init.mp4][c:hi:seg0.m4s][c:hi:seg1.m4s][c:hi:seg2.m4s]';
-      return { ok: piecesOf(r) === want, observed: r.bytes ? 'file contains ' + clean(piecesOf(r)) + '; toast "' + r.toast + '"' : describe(r) };
+      return { ok: piecesOf(r) === want && /joined segments/.test(r.toast || ''), observed: r.bytes ? 'file contains ' + clean(piecesOf(r)) + '; toast "' + r.toast + '"' : describe(r) };
     });
     await page.close();
 
-    const audio = await h.newPage(A.origin + '/pages/stream-audio.html');
-    await audio.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
-    await sleep(400);
-    await check('stream', 'S04', 9, 'A stream with a separate audio track produces a file with sound', async () => {
-      const r = await grab(audio, '#vd', { settle: 15000 });
-      const has = /audio/.test(piecesOf(r));
-      return { ok: has, observed: 'file has ' + (has ? 'audio' : 'no audio pieces') + '; toast "' + r.toast + '"' };
+    const split = await openStream(A.origin + '/real/split/master.m3u8');
+    await check('stream', 'S04', 9, 'A stream that keeps audio in a separate track is saved as one file with sound', async () => {
+      const r = await grab(split, '#v', { settle: 20000 });
+      if (!r.bytes) return { ok: false, observed: describe(r) };
+      const p = probe(r.bytes);
+      return { ok: whole(p), observed: p.text + '; toast "' + r.toast + '"' };
     });
 
     await check('stream', 'S07', null, 'A page with a single stream is not called a guess', async () => {
-      const r = await grab(audio, '#vd', { settle: 15000 });
+      const r = await grab(split, '#v', { settle: 20000 });
       return { ok: !/guess/i.test(r.toast || '') && /^Saved/.test(r.toast || ''), observed: 'toast "' + r.toast + '"' };
     });
-    await audio.close();
+    await split.close();
+
+    const multi = await openStream(A.origin + '/real/multi/master.m3u8');
+    await check('stream', 'S09', null, 'The higher of two renditions is the one saved', async () => {
+      const r = await grab(multi, '#v', { settle: 20000 });
+      if (!r.bytes) return { ok: false, observed: describe(r) };
+      const p = probe(r.bytes);
+      return { ok: whole(p) && p.height === 240 && /-240p\.mp4/.test(r.toast || ''), observed: p.text + '; toast "' + r.toast + '"' };
+    });
+    await multi.close();
+
+    const tsPage = await openStream(A.origin + '/real/ts/media.m3u8');
+    await check('stream', 'S10', null, 'An MPEG-TS stream is saved as an MP4, not a .ts file', async () => {
+      const r = await grab(tsPage, '#v', { settle: 20000 });
+      if (!r.bytes) return { ok: false, observed: describe(r) };
+      const p = probe(r.bytes);
+      return { ok: whole(p) && /\.mp4 \(/.test(r.toast || ''), observed: p.text + '; toast "' + r.toast + '"' };
+    });
+    await tsPage.close();
+
+    const guarded = await openStream(A.origin + '/guarded/multi/master.m3u8');
+    await check('stream', 'S11', null, 'A stream that is only served with the page as Referer is still saved', async () => {
+      const markA = A.mark();
+      const r = await grab(guarded, '#v', { settle: 20000 });
+      const refs = A.since(markA).filter((q) => /^\/guarded\//.test(q.path) && /one-stream\.html/.test(q.referer)).length;
+      if (!r.bytes) return { ok: false, observed: describe(r) + '; guarded requests carrying the page as Referer: ' + refs };
+      const p = probe(r.bytes);
+      return { ok: whole(p), observed: p.text + '; ' + refs + ' requests carried the page as Referer; toast "' + r.toast + '"' };
+    });
+    await guarded.close();
+
+    const fake = await h.newPage(A.origin + '/pages/stream-audio.html');
+    await fake.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
+    await sleep(400);
+    await check('stream', 'S08', null, 'When split audio cannot be merged, nothing is saved rather than a silent file', async () => {
+      const r = await grab(fake, '#vd', { settle: 20000 });
+      const none = !r.api.some((d) => d.state === 'complete');
+      return { ok: none && /Could not save this video/.test(r.toast || ''), observed: describe(r) };
+    });
+    await fake.close();
 
     const nocors = await h.newPage(A.origin + '/pages/stream-nocors.html');
     await nocors.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
     await sleep(400);
-    await check('stream', 'S05', null, 'Stream on a CDN without CORS is still rebuilt (service-worker fetch path)', async () => {
-      const r = await grab(nocors, '#ve', { settle: 15000 });
+    await check('stream', 'S05', null, 'Stream on a CDN that refuses cross-origin reads is still rebuilt', async () => {
+      const r = await grab(nocors, '#ve', { settle: 20000 });
       return { ok: piecesOf(r) === '[e:hi:init.mp4][e:hi:seg0.m4s][e:hi:seg1.m4s][e:hi:seg2.m4s]', observed: r.bytes ? 'file contains ' + clean(piecesOf(r)) : describe(r) };
     });
     await nocors.close();
+
+    // A stream slowed down at the server, so there is time to do other things.
+    A.slow(900);
+    const slow = await openStream(A.origin + '/real/multi/master.m3u8');
+
+    await check('stream', 'S12', 10, 'While a video is downloading, another image can be saved, and the video still finishes', async () => {
+      const marks = await mark(h);
+      await h.hover(slow, '#v');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(700);
+      await h.hover(slow, '#pic');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(1500);
+      const early = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id) && d.state === 'complete').map((d) => base(d.url));
+      const end = Date.now() + 40000;
+      let all = [];
+      while (Date.now() < end) {
+        all = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id) && d.state === 'complete');
+        if (all.some((d) => /^blob:/.test(d.url))) break;
+        await sleep(300);
+      }
+      const video = all.find((d) => /^blob:/.test(d.url));
+      const p = video ? probe(fs.readFileSync(video.filename)) : { text: 'video never arrived' };
+      const imageFirst = early.includes('beside.png') && !early.includes('blob');
+      return { ok: imageFirst && !!video && whole(p), observed: 'finished within 1.5s of the second grab: [' + early.join(', ') + ']; later the video: ' + p.text };
+    });
+
+    await check('stream', 'S13', null, 'Escape cancels a video download and nothing is saved', async () => {
+      const marks = await mark(h);
+      await clearToast(slow);
+      await h.hover(slow, '#v');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(1200);
+      await slow.keyboard.press('Escape');
+      await sleep(4000);
+      const t = await h.toast(slow);
+      const files = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
+      return { ok: files === 0 && /Cancelled/.test(t ? t.text : ''), observed: 'toast "' + (t ? t.text : '') + '"; downloads ' + files };
+    });
+
+    await check('stream', 'S14', 10, 'A video download carries on after its tab navigates away', async () => {
+      const marks = await mark(h);
+      await h.hover(slow, '#v');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(900);
+      await slow.goto(A.origin + '/article.html');
+      const end = Date.now() + 40000;
+      let video = null;
+      while (Date.now() < end && !video) {
+        video = (await h.apiDownloads()).find((d) => !marks.ids.has(d.id) && d.state === 'complete' && /^blob:/.test(d.url));
+        await sleep(300);
+      }
+      const p = video ? probe(fs.readFileSync(video.filename)) : { text: 'video never arrived' };
+      return { ok: !!video && whole(p), observed: p.text };
+    });
+    A.slow(0);
+    await slow.close();
   }
 
   /* ========================================================== screenshot */
@@ -540,12 +650,12 @@ const base = (u) => {
       await opt.keyboard.press('Control+Shift+KeyK');
       await sleep(200);
       const shown = await opt.evaluate(() => document.getElementById('keyRec').textContent);
-      const stored = (await h.getCfg()).key;
+      const stored = ((await h.getCfg()) || {}).key || { code: '(nothing stored)' };
       const marker = await opt.evaluate(() => /unsaved|not saved/i.test(document.body.innerText));
       const persisted = stored.code === 'KeyK';
       await opt.reload(); await sleep(400);
       const afterReload = await opt.evaluate(() => document.getElementById('keyRec').textContent);
-      return { ok: persisted || marker, observed: 'box shows "' + shown + '", storage still has ' + stored.code + ', no unsaved marker; after reload the box reads "' + afterReload + '"' };
+      return { ok: persisted || marker, observed: 'box shows "' + shown + '", storage has ' + stored.code + ', no unsaved marker; after reload the box reads "' + afterReload + '"' };
     });
 
     await check('ui', 'P03', null, 'Save persists a recorded shortcut and the page honours it', async () => {
@@ -568,7 +678,18 @@ const base = (u) => {
 
     await check('ui', 'P05', 20, 'Defaults are not written into storage at install', async () => {
       const keys = Object.keys((await h.getCfg()) || {});
-      return { ok: keys.length === 0, observed: 'storage holds ' + keys.length + ' keys right after install (' + keys.slice(0, 5).join(', ') + ', ...)' };
+      return { ok: keys.length === 0, observed: 'storage holds ' + keys.length + ' keys right after install' + (keys.length ? ' (' + keys.slice(0, 5).join(', ') + ')' : '') };
+    });
+
+    await check('ui', 'P06', 20, 'Saving stores only what was changed, and an old full config is slimmed to the same', async () => {
+      await opt.click('#keyRec');
+      await opt.keyboard.press('Control+Shift+KeyK');
+      await opt.click('#save');
+      await sleep(300);
+      const saved = Object.keys((await h.getCfg()) || {}).sort().join(',');
+      await opt.click('#reset'); await sleep(300);
+      const afterReset = await h.getCfg();
+      return { ok: saved === 'key,v' && afterReset === undefined, observed: 'after changing one shortcut storage holds [' + saved + ']; after Reset it holds ' + (afterReset === undefined ? 'nothing' : JSON.stringify(afterReset)) };
     });
 
     await check('ui', 'P04', null, 'Popup loads cleanly', async () => {
@@ -587,13 +708,60 @@ const base = (u) => {
   /* ============================================================ lifecycle */
 
   if (!only || only === 'life') {
-    await check('life', 'X02', 19, 'The service worker refuses to fetch arbitrary URLs on request', async () => {
-      const r = await h.probe.evaluate((u) => new Promise((res) => chrome.runtime.sendMessage({ type: 'proxyFetch', url: u }, (x) => res(x && x.ok ? atob(x.b64).slice(0, 60) : 'refused'))), A.origin + '/article.html');
-      return { ok: r === 'refused', observed: 'asked for a loopback page, got back: ' + r };
+    await check('life', 'X02', 19, 'No message hands fetched bytes back to the caller', async () => {
+      const r = await h.probe.evaluate((u) => new Promise((res) => chrome.runtime.sendMessage({ type: 'proxyFetch', url: u }, (x) => { void chrome.runtime.lastError; res(x && x.b64 ? atob(x.b64).slice(0, 60) : 'refused'); })), A.origin + '/article.html');
+      const g = await h.probe.evaluate((u) => new Promise((res) => chrome.runtime.sendMessage({ type: 'proxyGrab', url: u, filename: 'x.html' }, (x) => { void chrome.runtime.lastError; res(JSON.stringify(x)); })), A.origin + '/article.html');
+      return { ok: r === 'refused' && !/b64|html>/.test(g), observed: 'read-back request: ' + r + '; download-only request for a web page answered ' + g };
     });
 
-    // Last, because it restarts the extension and takes the probe page with it.
-    await check('life', 'X01', 21, 'After the extension reloads, an open tab still saves the image or says to reload', async () => {
+    await check('life', 'F01', null, 'The popup route loads a feature into a tab that asks for it', async () => {
+      const page = await h.newPage(A.origin + '/pages/gallery.html');
+      await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
+      const res = await h.probe.evaluate(async () => {
+        const tabs = await chrome.tabs.query({});
+        const tab = tabs.find((t) => /gallery\.html/.test(t.url || ''));
+        if (!tab) return { ok: false, error: 'tab not found' };
+        return new Promise((r) => chrome.runtime.sendMessage({ type: 'feature', name: 'gallery', tabId: tab.id }, r));
+      });
+      await sleep(2000);
+      const open = await page.evaluate(() => !!document.getElementById('__snaffle_gallery'));
+      await page.close();
+      return { ok: !!(res && res.ok) && open, observed: 'answer ' + JSON.stringify(res) + '; panel open: ' + open };
+    });
+
+    await check('life', 'F02', null, 'On a page extensions cannot touch, the popup route says so', async () => {
+      const page = await h.context.newPage();
+      await page.goto('chrome://version/').catch(() => {});
+      const res = await h.probe.evaluate(async () => {
+        const tabs = await chrome.tabs.query({});
+        const tab = tabs.find((t) => !t.url);
+        if (!tab) return { ok: false, error: 'no restricted tab found' };
+        return new Promise((r) => chrome.runtime.sendMessage({ type: 'feature', name: 'capture', tabId: tab.id }, r));
+      });
+      await page.close();
+      return { ok: !!res && res.ok === false && /cannot run on this page/i.test(res.error || ''), observed: 'answer ' + JSON.stringify(res) };
+    });
+
+    await check('life', 'X03', 21, 'Loading the content script into a tab that already has it does not double the grab', async () => {
+      const page = await h.newPage(A.origin + '/pages/grab.html');
+      await sleep(500);
+      // What the extension does to every open tab when it is installed or updated.
+      const injected = await h.probe.evaluate(async () => {
+        const tabs = await chrome.tabs.query({});
+        const tab = tabs.find((t) => /grab\.html/.test(t.url || ''));
+        const r = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['shared.js', 'content.js'] });
+        return r.length;
+      });
+      const r = await grab(page, '#plain img');
+      const requests = r.reqA.filter((q) => /plain\.png/.test(q.path)).length;
+      await page.close();
+      return { ok: requests === 1 && r.api.length === 1, observed: 're-injected into ' + injected + ' frames; one key press made ' + requests + ' request(s) and ' + r.api.length + ' download(s)' };
+    });
+
+    // Reloading an unpacked extension under automation removes it for good, so
+    // the fresh copy that a real update injects cannot be observed here. What
+    // can be: the copy left behind recognises it has been cut off and says so.
+    await check('life', 'X01', 21, 'A tab whose extension has gone says to reload, rather than half-working', async () => {
       const page = await h.newPage(A.origin + '/pages/grab.html');
       await sleep(500);
       await h.probe.evaluate(() => chrome.runtime.reload()).catch(() => {});
@@ -603,11 +771,11 @@ const base = (u) => {
       await clearToast(page);
       await h.hover(page, '#plain img');
       await page.keyboard.press('Alt+KeyS');
-      await sleep(3000);
+      await sleep(2000);
       const t = await h.toast(page);
-      const fetched = A.since(markA).filter((r) => /plain\.png/.test(r.path)).length;
+      const fetched = A.since(markA).filter((q) => /plain\.png/.test(q.path)).length;
       const text = t ? t.text : '';
-      return { ok: /reload/i.test(text) || (fetched > 0 && /^Saved/.test(text)), observed: 'toast "' + (text || '(none)') + '"; server saw ' + fetched + ' request(s) for the image' };
+      return { ok: /Reload this page/.test(text) && fetched === 0, observed: 'toast "' + (text || '(none)') + '"; requests for the image: ' + fetched };
     });
   }
 

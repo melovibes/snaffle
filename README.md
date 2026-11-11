@@ -18,7 +18,8 @@ A Chrome extension that saves whatever image or video is under your mouse pointe
 1. Open `chrome://extensions`
 2. Turn on **Developer mode** (top right)
 3. Click **Load unpacked** and pick the folder you cloned this into
-4. Reload any tabs that were already open — content scripts are only injected into pages loaded after install
+
+Tabs that were already open work straight away: Snaffle loads itself into them when it is installed or updated.
 
 Pin the toolbar icon for a quick on/off switch and a reminder of your triggers.
 
@@ -64,20 +65,26 @@ Signed URLs (AWS signatures, Instagram/Facebook CDNs) are left untouched, since 
 
 ### Streamed video (X, and other HLS sites)
 
-Video on X is not a file. The player fetches an HLS playlist and feeds thousands of small segments to a `MediaSource`, so the `<video>` element only holds a `blob:` URL that refers to memory, not to anything downloadable. Saving it means rebuilding the file.
+Video on X is not a file. The player fetches an HLS playlist and feeds small segments to a `MediaSource`, so the `<video>` element only holds a `blob:` URL that refers to memory. Saving it means rebuilding the file.
 
-Snaffle does that:
+1. A `webRequest` listener records every `.m3u8` playlist and whole-file `.mp4` a page requests. It judges by the path of the request, ignores navigations, and ignores the extension's own requests.
+2. On a grab, the hovered video's poster gives the media id. X repeats that same id in the video URL (`ext_tw_video/<id>/`), so the right playlist is matched exactly even with a dozen videos in one timeline. If the poster carries an id that matches nothing, Snaffle refuses rather than hand you a different video. On sites with no id to match, it takes the most recent stream the page asked for; when the page has loaded more than one, the toast says the result is a best guess.
+3. The job is handed to a hidden worker page belonging to the extension, not run in the tab. It does not block other grabs, and it carries on if the tab navigates away or closes.
+4. The worker page reads the stream with the bundled [Mediabunny](https://mediabunny.dev) library and writes a real MP4: the best rendition, with a proper index so every player shows the right length and can seek. No re-encoding happens; the audio and video are copied as they are.
 
-1. A `webRequest` listener records every `.m3u8` playlist and whole-file `.mp4` the page requests — playlists only, never the segment storm.
-2. On a grab, the hovered video's poster gives the media id. X repeats that same id in the video URL (`ext_tw_video/<id>/`), so the right playlist is matched exactly even with a dozen videos in one timeline. If the poster carries an id that matches nothing, Snaffle refuses rather than hand you a different video. On sites with no id to match, it takes the most recent stream the page asked for; when the page has loaded more than one, the toast says the result is a best guess. Playlists Snaffle fetches for itself are not counted as the page's.
-3. The master playlist is parsed, the highest-resolution variant is chosen, and its segments are fetched six at a time with retries.
-4. The init segment and media segments are concatenated into one Blob and saved as `.mp4` (fragmented MP4) or `.ts` for legacy streams.
+That covers the cases plain segment-joining cannot:
 
-The toast shows segment progress, and **Escape cancels**. Files land as `user-statusid-720p.mp4`, the resolution taken from the playlist. Turn it off with **Rebuild streamed video** in options, which reverts to saving the poster frame.
+- **Audio kept in a separate track** (Reddit and many others) is merged into the one file.
+- **MPEG-TS streams** come out as `.mp4`, not `.ts`.
+- **Sites that only serve video to their own pages** are handled by a session rule that adds the page's address as `Referer` to the extension's own requests for the length of the job.
 
-It refuses, with a clear message, when a stream is encrypted (`#EXT-X-KEY` with real DRM), uses byte-range segments, or runs longer than 1200 segments. DRM-protected services are not defeated by this and are not meant to be — it works on X because X's segments are served unencrypted to any player.
+The toast shows progress, and **Escape cancels**. Files land as `user-statusid-720p.mp4`, the resolution taken from the track that was saved.
 
-For a site whose CDN refuses cross-origin reads, segment fetching falls back to the service worker, which has host permissions.
+If the library cannot read a stream, Snaffle falls back to joining the best rendition's segments end to end, and the toast says so, because a joined file can show the wrong length in strict players. It will not do that when the audio is separate: a silent file presented as the whole video is worse than an honest failure.
+
+It refuses, with a reason, when a stream is live (it has no end), or is encrypted with DRM. DRM-protected services are not defeated by this and are not meant to be.
+
+Turn the whole thing off with **Rebuild streamed video** in options, which reverts to saving the poster frame.
 
 ## Full-page screenshots
 
@@ -128,31 +135,39 @@ Every address Snaffle works out is a guess about a server it does not control, s
 
 1. **Downloads API**, one candidate at a time. Snaffle waits for the server's answer before saying anything. A refusal, a 404, or a web page served where a file should be moves it to the next candidate, and the rejected download is removed from disk and from Chrome's list.
 2. **Page-context fetch** of the page's own address if every candidate fails. The page's cookies and `Referer` apply, which defeats most hotlink protection.
-3. **Service-worker fetch** as a last resort, capped at 60 MB.
+3. **Worker-page fetch** as a last resort, with no page cookies.
 
 "Saved" appears only once a real file of the right kind is arriving. If all three fail the toast says why, and nothing is left behind.
 
-Bytes that exist only in the page (an encoded canvas, an inline SVG, a rebuilt video, a screenshot, a file recovered by step 2) are handed to the service worker so they land in your folder like everything else. Above 24 MB that hand-off is not possible, and the file is saved to the Downloads root instead; the toast says so when it happens.
+Bytes that exist only in the page (an encoded canvas, an inline SVG, a screenshot, a file recovered by step 2) are passed in chunks to the extension's worker page, which hands them to the downloader as a blob. They land in your folder like everything else, at any size.
 
 Once the server has said what a file really is, its extension is corrected to match: a `.jpg` address that serves WebP is saved as `.webp`.
+
+Nothing in this chain ever returns fetched bytes to a web page. The worker page only accepts instructions from the service worker; the single thing a page can send it is bytes to be saved.
 
 ## Files
 
 | File | Role |
 | --- | --- |
 | `manifest.json` | MV3 manifest |
-| `content.js` | hover tracking, media resolution, HLS assembly, triggers, toast/outline UI |
-| `capture.js` | full-page screenshot: scroll, stitch, PNG/JPEG/PDF |
-| `gallery.js` | page media list panel and bulk download |
-| `background.js` | filename building, downloads, retries, playlist sniffer, screenshots, context menu |
+| `shared.js` | defaults, config handling, labels, file naming, content-type rules; used by every other part |
+| `content.js` | in every frame: hover tracking, media resolution, triggers, toast and outline |
+| `background.js` | service worker: decides what is downloaded and where, tracks stream playlists, loads features into tabs |
+| `offscreen.html/.js` | hidden worker page: rebuilds streamed video, holds large files as blobs |
+| `hls.js` | playlist reading for the fallback segment-joiner |
+| `vendor/mediabunny.min.mjs` | [Mediabunny](https://mediabunny.dev) 1.65.2, unmodified, MPL-2.0 (licence alongside) |
+| `capture.js` | full-page screenshot; loaded into a tab only when asked for |
+| `gallery.js` | page media list; loaded into a tab only when asked for |
 | `options.html/.css/.js` | settings with key and mouse recorders |
 | `popup.html/.css/.js` | on/off switch, trigger summary, capture and list buttons |
-| `test/snaffle.test.js` | offline checks of the pure logic — `npm test` |
-| `test/browser/` | the real extension in headless Chromium against local fixtures — `npm run test:browser` |
+| `test/snaffle.test.js` | offline checks of the pure logic: `npm test` |
+| `test/browser/` | the real extension in headless Chromium against local fixtures: `npm run test:browser` |
 | `docs/phase0-findings.md` | what the first browser run found, and what is still open |
-| `icons/` | generated PNG icons |
+| `icons/`, `tools/make-icons.ps1` | icon set and the script that regenerates it |
 
-`capture.js` and `gallery.js` are separate content scripts in the same isolated world. `content.js` publishes a shared object (`window.__SNAFFLE`) holding the UI and download plumbing, and they attach themselves to it, so manifest load order matters. A test enforces both the order and that neither file reaches for a helper the core does not export.
+Only `shared.js` and `content.js` run in every frame of every page. The screenshot and media-list code is loaded into a tab by the service worker when a key or the popup asks for it.
+
+Settings are stored as differences from the defaults, not as a full copy, so a default that changes in a later version reaches everyone who never touched that setting.
 
 ## Icon
 
@@ -168,17 +183,17 @@ pwsh -File tools/make-icons.ps1
 
 ```
 npm install
-npm test              # 71 offline checks, a second or two
-npm run test:browser  # 49 checks in headless Chromium, about three minutes
+npm test              # 92 offline checks, a second or two
+npm run test:browser  # 59 checks in headless Chromium, about five minutes; needs ffprobe on the PATH
 ```
 
-**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, HLS playlists and each refusal condition, file naming, content-type verdicts, stream grouping, the PDF writer's byte offsets, and static wiring between the scripts and their HTML.
+**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, content-type verdicts, stream grouping, the PDF writer's byte offsets, and static wiring between the scripts, the manifest and the HTML.
 
-**Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. The saved bytes are read back, so a rebuilt video is compared byte for byte and run through `ffprobe`, and a screenshot is decoded and sampled.
+**Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. Saved bytes are read back: a rebuilt video is run through `ffprobe` for its tracks, frame count and length, and a screenshot is decoded and sampled. The streams are real ones made with ffmpeg, including split-audio, multi-rendition, MPEG-TS and Referer-guarded variants.
 
 Checks for defects that are understood but not yet fixed are listed in `KNOWN_FAILING` at the top of `test/browser/run.js`, each with the phase that fixes it. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale.
 
-Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the toolbar popup's buttons, and the file-extension correction, which Chrome skips when downloads are driven by the automation protocol.
+Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the toolbar popup itself, the file-extension correction (Chrome skips that hook when downloads are driven by the automation protocol), and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
 
 ## Troubleshooting
 
@@ -192,20 +207,24 @@ Not covered by automation: real sites (they need a signed-in browser), a physica
 | `Ctrl + Click` | opens in a background tab |
 | `Alt + D` | focuses the address bar |
 
-Snaffle cancels the entire click sequence (`pointerdown` through `auxclick`) when it recognizes your trigger, which blocks these. If a browser gesture still fires, Snaffle did not see the click:
+When it recognizes your trigger, Snaffle hides `pointerdown` from the page and cancels the rest of the click sequence (`mousedown` through `auxclick`), which blocks these. If a browser gesture still fires, Snaffle did not see the click:
 
-1. **Reload the tab.** Content scripts are only injected into pages loaded after the extension was installed or reloaded.
+1. **See whether the page is one extensions cannot touch.** `chrome://` pages, the Web Store and other extensions' pages are off limits; the popup says so when you use its buttons there.
 2. **Check the combination matches exactly.** The trigger requires those modifiers and no others — `Ctrl + Alt + Middle click` does not fire a trigger set to `Alt + Middle click`, so Chrome handles it instead.
 3. **Look for a toast.** Any toast at all — including an error — means Snaffle intercepted the click. No toast means it never ran.
 4. **Confirm it is on.** Toolbar icon, master switch, and the per-trigger on/off state.
 
-**A video on X saves the poster image instead of the video.** Snaffle never saw the playlist, because the tab was loaded before the extension was installed or reloaded, or the video has not been played yet. Reload the tab, let the video start, then grab. The playlist is recorded the moment the player requests it.
+**A video on X saves the poster image instead of the video.** Snaffle never saw the playlist, because the video has not been played yet. Let it start, then grab. The playlist is recorded the moment the player requests it.
 
-**"That stream is too long to reassemble."** Over 1200 segments. That is roughly an hour of video, and reassembling it in a browser tab is not sensible.
+**"Snaffle was updated. Reload this page to use it here."** The copy of Snaffle in that tab lost contact with the extension and was not replaced. Reloading the page fixes it.
+
+**A saved video is marked "saved as joined segments".** The stream could not be read by the converter, so its pieces were joined as they are. It will play in VLC and browsers; a strict player may show the wrong length. `ffmpeg -i in.mp4 -c copy out.mp4` rewrites it properly.
 
 ## Notes and limits
 
 - Chrome does not run extensions on `chrome://` pages, the Web Store, or other extensions' pages — nothing will happen there.
 - DRM-protected video cannot be saved.
-- The extension asks for `<all_urls>` because media can be on any site, and because screenshots need it; and for `webRequest` so it can see the video playlist URLs a page requests. Chrome describes that permission as reading your browsing history. Nothing is read off-page and nothing is sent anywhere — recorded playlist URLs live in `chrome.storage.session`, which is memory-only, cleared when Chrome closes, and pruned after two hours. Downloads go straight to your disk.
+- Permissions, and why each is there: `<all_urls>` because media can be on any site and screenshots need it; `webRequest` to see the video playlist URLs a page requests; `scripting` to load Snaffle into tabs that were open before it was installed, and to load the screenshot and media-list code on demand; `offscreen` for the hidden worker page; `declarativeNetRequestWithHostAccess` to add a `Referer` to the extension's own video requests. Chrome describes that permission as reading your browsing history. Nothing is read off-page and nothing is sent anywhere — recorded playlist URLs live in `chrome.storage.session`, which is memory-only, cleared when Chrome closes, and pruned after two hours. Downloads go straight to your disk.
 - Settings live in `chrome.storage.sync`, so they follow your Chrome profile across machines.
+- Rebuilding a streamed video holds the finished file in memory before saving it, so a very long video needs that much free memory.
+- Mediabunny is bundled unmodified under the Mozilla Public License 2.0; its licence text is in `vendor/`. Snaffle's own code has no licence file yet.

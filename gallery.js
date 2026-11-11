@@ -2,7 +2,9 @@
    (across frames), filters them, and bulk-downloads the selection. */
 (() => {
   const api = window.__SNAFFLE;
-  if (!api) return;
+  // Loaded into the tab each time it is asked for; only the first copy stays.
+  if (!api || api.galleryLoaded) return;
+  api.galleryLoaded = true;
 
   const MEDIA_HREF = /\.(jpe?g|png|gif|webp|avif|bmp|svg|mp4|webm|mov|m4v)(?=$|[?#])/i;
   const BG_SCAN_LIMIT = 4000;

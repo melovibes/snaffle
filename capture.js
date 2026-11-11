@@ -2,7 +2,8 @@
    through the service worker, and stitches the shots onto one canvas. */
 (() => {
   const api = window.__SNAFFLE;
-  if (!api) return;
+  // Loaded into the tab each time it is asked for; only the first copy stays.
+  if (!api || api.capture) return;
 
   // Only the top frame drives a capture; captureVisibleTab shoots the whole tab.
   if (window.top !== window) return;
@@ -185,7 +186,7 @@
 
       const saved = await api.saveBlob(blob, path);
       const scaled = scale < dpr ? ', scaled to fit the canvas limit' : '';
-      api.toast('Saved ' + api.savedText(saved) + ' (' + canvas.width + ' x ' + canvas.height + scaled + ')', 'ok');
+      api.announce('Saved ', saved, ' (' + canvas.width + ' x ' + canvas.height + scaled + ')');
     } catch (e) {
       api.ask({ type: 'badge', text: '' });
       if (host) host.style.display = '';

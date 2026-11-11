@@ -1,46 +1,23 @@
 /* Snaffle - content script. Runs in every frame. */
 (() => {
-  if (window.__snaffleLoaded) return;
-  window.__snaffleLoaded = true;
+  const S = SnaffleShared;
 
-  const DEFAULTS = {
-    enabled: true,
-    key: { enabled: true, code: 'KeyS', label: 'Alt + S', ctrl: false, alt: true, shift: false, meta: false },
-    mouse: { enabled: true, button: 1, label: 'Alt + Middle click', ctrl: false, alt: true, shift: false, meta: false },
-    captureKey: { enabled: true, code: 'KeyS', label: 'Alt + Shift + S', ctrl: false, alt: true, shift: true, meta: false },
-    galleryKey: { enabled: true, code: 'KeyI', label: 'Alt + Shift + I', ctrl: false, alt: true, shift: true, meta: false },
-    folder: 'Snaffle/{host}',
-    template: '{name}.{ext}',
-    captureFormat: 'png',
-    captureQuality: 92,
-    captureHideFixed: true,
-    captureFullWidth: true,
-    galleryMinSize: 80,
-    upgrade: true,
-    preferLink: true,
-    streamAssembly: true,
-    posterFallback: true,
-    saveAs: false,
-    toast: true,
-    outline: false,
-    contextMenu: true
-  };
+  // An update leaves the old copy of this script behind in every open tab, cut
+  // off from the extension but still listening. The fresh copy that is injected
+  // after an update retires it, so one key press is never handled twice. A copy
+  // that is still working is left alone, which makes injecting this file again
+  // into a tab that already has it harmless.
+  const prior = window.__SNAFFLE;
+  if (prior && prior.alive && prior.alive()) return;
+  if (prior && prior.retire) prior.retire();
 
-  let cfg = JSON.parse(JSON.stringify(DEFAULTS));
+  let dead = false;
+  const alive = () => { try { return !dead && !!chrome.runtime.id; } catch (_) { return false; } };
 
-  const merge = (base, over) => {
-    const out = Object.assign({}, base);
-    for (const k of Object.keys(over || {})) {
-      const v = over[k];
-      if (v && typeof v === 'object' && !Array.isArray(v) && typeof base[k] === 'object') out[k] = merge(base[k], v);
-      else if (v !== undefined) out[k] = v;
-    }
-    return out;
-  };
-
-  chrome.storage.sync.get('cfg', (s) => { if (s && s.cfg) cfg = merge(DEFAULTS, s.cfg); });
+  let cfg = S.effective(null);
+  chrome.storage.sync.get('cfg', (s) => { if (s && s.cfg) cfg = S.effective(s.cfg); });
   chrome.storage.onChanged.addListener((ch, area) => {
-    if (area === 'sync' && ch.cfg) cfg = merge(DEFAULTS, ch.cfg.newValue || {});
+    if (area === 'sync' && ch.cfg) cfg = S.effective(ch.cfg.newValue);
   });
 
   /* ---------------------------------------------------------------- hover */
@@ -425,19 +402,12 @@
 
   /* --------------------------------------------------------- name tokens */
 
-  const MIME_EXT = {
-    'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
-    'image/avif': 'avif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp',
-    'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
-    'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/wav': 'wav'
-  };
-
   function tokensFor(hit, url) {
     let name = '', ext = '';
     const u = url || hit.url;
     if (/^data:/i.test(u)) {
       const m = /^data:([^;,]+)/i.exec(u);
-      ext = (m && MIME_EXT[m[1].toLowerCase()]) || 'png';
+      ext = (m && S.MIME_EXT[m[1].toLowerCase()]) || 'png';
       name = document.title || location.hostname || 'media';
     } else {
       try {
@@ -564,12 +534,6 @@
     try { const r = await fetch(url); return r.ok || r.type === 'opaque'; } catch (_) { return false; }
   }
 
-  // Text is never the picture or video someone pointed at. SVG is the one
-  // image type that calls itself XML.
-  const notMedia = (type) => !/svg/i.test(type || '') && /^text\/|html|json|xml|javascript/i.test(type || '');
-
-  const sizeText = (bytes) => (bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB');
-
   function pageDownload(href, filename, revoke) {
     return new Promise((res) => {
       const a = document.createElement('a');
@@ -582,25 +546,55 @@
     });
   }
 
-  function blobToDataUrl(blob) {
-    return new Promise((res, rej) => {
-      const fr = new FileReader();
-      fr.onload = () => res(fr.result);
-      fr.onerror = () => rej(fr.error);
-      fr.readAsDataURL(blob);
-    });
+  const toBase64 = (blob) => new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => rej(fr.error);
+    fr.readAsDataURL(blob);
+  });
+
+  function dataUrlToBlob(dataUrl) {
+    const comma = dataUrl.indexOf(',');
+    if (comma < 0) return null;
+    const head = dataUrl.slice(5, comma);
+    const body = dataUrl.slice(comma + 1);
+    const mime = head.split(';')[0] || 'application/octet-stream';
+    try {
+      if (/;base64/i.test(head)) {
+        const bin = atob(body);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return new Blob([bytes], { type: mime });
+      }
+      return new Blob([decodeURIComponent(body)], { type: mime });
+    } catch (_) {
+      return null;
+    }
   }
 
-  // Above this a file is too big to hand to the service worker in one message.
-  const MAX_INLINE = 24 * 1024 * 1024;
+  // Messages carry text, so bytes travel as base64, a few megabytes at a time.
+  const CHUNK = 6 * 1024 * 1024;
 
-  // Save bytes that exist only in this page. Passing them to the service worker
-  // lets the download honour the folder setting. An anchor click cannot carry a
-  // folder, so it is the last resort, and the caller is told when it was used.
+  // Save bytes that exist only in this page: a canvas, a screenshot, a file
+  // the page fetched with its own cookies. They are passed in chunks to the
+  // extension's worker page, which can hand them to the downloader with the
+  // folder setting applied, at any size. An anchor click cannot carry a folder,
+  // so it is kept only for when the extension cannot be reached, and the
+  // caller is told when it was used.
   async function saveBlob(blob, path) {
-    if (blob.size <= MAX_INLINE) {
-      const res = await ask({ type: 'saveData', dataUrl: await blobToDataUrl(blob), filename: path });
-      if (res && res.ok) return { name: res.filename, filed: true };
+    const open = await ask({ type: 'blobOpen' });
+    if (open && open.ok) {
+      const id = 'up-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      let sent = blob.size > 0;
+      for (let at = 0; at < blob.size && sent; at += CHUNK) {
+        const r = await ask({ type: 'blobPart', id, b64: await toBase64(blob.slice(at, at + CHUNK)) });
+        sent = !!(r && r.ok);
+      }
+      if (sent) {
+        const res = await ask({ type: 'blobSave', id, mime: blob.type, filename: path });
+        if (res && res.ok) return { name: res.filename, filed: true };
+        if (res && res.cancelled) return { name: '', cancelled: true };
+      }
     }
     const name = String(path).split('/').pop();
     await pageDownload(URL.createObjectURL(blob), name, true);
@@ -609,8 +603,15 @@
 
   const savedText = (saved) => saved.name + (saved.filed ? '' : ' (in Downloads, outside your Snaffle folder)');
 
+  // Say that a file was saved - unless the user cancelled the Save As dialog,
+  // in which case there is nothing to say.
+  function announce(prefix, saved, suffix, kind) {
+    if (saved.cancelled) return;
+    toast(prefix + savedText(saved) + (suffix || ''), kind || 'ok');
+  }
+
   // The browser could not fetch it alone. The page can try with its own
-  // cookies and Referer, and the service worker after that.
+  // cookies and Referer, and the extension's worker page after that.
   async function fallback(url, path) {
     let reason = '';
     try {
@@ -618,133 +619,20 @@
       if (!r.ok) throw new Error('the site answered ' + r.status);
       const blob = await r.blob();
       if (!blob.size) throw new Error('the site sent an empty file');
-      if (notMedia(blob.type)) throw new Error('the site sent a web page instead of a file');
+      if (S.notMedia(blob.type)) throw new Error('the site sent a web page instead of a file');
       return { ok: true, saved: await saveBlob(blob, path) };
     } catch (e) {
       reason = (e && e.message) || String(e);
     }
     const res = await ask({ type: 'proxyGrab', url, filename: path });
     if (res && res.ok) return { ok: true, saved: { name: res.filename, filed: true } };
+    if (res && res.cancelled) return { ok: true, saved: { name: '', cancelled: true } };
     // "Failed to fetch" is the browser's word for a cross-origin refusal; the
-    // service worker's answer says more about what the site actually did.
-    return { ok: false, reason: (res && res.error && !/Failed to fetch/i.test(res.error) ? res.error : '') || reason };
+    // extension's own attempt says more about what the site actually did.
+    return { ok: false, reason: (res && res.error) || reason };
   }
 
-  /* ------------------------------------------------- streamed video (HLS) */
-
-  const MAX_SEGMENTS = 1200;
-  let cancelStream = false;
-
-  function b64ToBuf(b64) {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out.buffer;
-  }
-
-  // video.twimg.com allows cross-origin reads, because the player itself needs
-  // them. Where a CDN does not, the service worker fetches under host permission.
-  async function fetchBuf(url, viaProxy) {
-    if (!viaProxy) {
-      try {
-        const r = await fetch(url, { credentials: 'omit' });
-        if (r.ok) return await r.arrayBuffer();
-      } catch (_) {}
-    }
-    const res = await ask({ type: 'proxyFetch', url });
-    if (res && res.ok) return b64ToBuf(res.b64);
-    throw new Error('could not read ' + url.split('/').pop());
-  }
-
-  // The sniffer records every playlist requested from this tab, and cannot
-  // tell the page's requests from ours. Announce ours first so they are not
-  // recorded as if the page had asked for another video.
-  async function fetchText(url) {
-    await ask({ type: 'ownFetch', urls: [url] });
-    return new TextDecoder().decode(await fetchBuf(url));
-  }
-
-  function parseMaster(text, base) {
-    const out = [];
-    const lines = text.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      if (!/^#EXT-X-STREAM-INF/i.test(lines[i])) continue;
-      const bw = /BANDWIDTH=(\d+)/i.exec(lines[i]);
-      const rs = /RESOLUTION=(\d+)x(\d+)/i.exec(lines[i]);
-      let j = i + 1;
-      while (j < lines.length && (!lines[j].trim() || lines[j].trim().startsWith('#'))) j++;
-      if (j >= lines.length) break;
-      out.push({
-        bandwidth: bw ? parseInt(bw[1], 10) : 0,
-        width: rs ? parseInt(rs[1], 10) : 0,
-        height: rs ? parseInt(rs[2], 10) : 0,
-        url: new URL(lines[j].trim(), base).href
-      });
-    }
-    return out;
-  }
-
-  function parseMedia(text, base) {
-    const segs = [];
-    let init = '';
-    for (const raw of text.split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line) continue;
-      if (line.startsWith('#')) {
-        const m = /^#EXT-X-MAP:.*URI="([^"]+)"/i.exec(line);
-        if (m) init = new URL(m[1], base).href;
-        continue;
-      }
-      segs.push(new URL(line, base).href);
-    }
-    return { init, segs };
-  }
-
-  function playlistBlocker(text) {
-    if (/#EXT-X-KEY:(?!.*METHOD=NONE)/i.test(text)) return 'This stream is encrypted (DRM) and cannot be saved.';
-    if (/#EXT-X-BYTERANGE/i.test(text)) return 'This stream uses byte-range segments, which Snaffle cannot reassemble.';
-    return '';
-  }
-
-  // Segments are folded into a Blob every CHUNK of them. Holding all of a long
-  // video as ArrayBuffers would sit in the tab's heap; a Blob can be backed by
-  // disk, so peak memory stays at roughly one chunk.
-  async function assembleStream(urls, mime, onProgress) {
-    const CHUNK = 24;
-    const LANES = 6;
-    let blob = new Blob([], { type: mime });
-    let done = 0;
-    let viaProxy = false;
-
-    for (let start = 0; start < urls.length && !cancelStream; start += CHUNK) {
-      const slice = urls.slice(start, start + CHUNK);
-      const bufs = new Array(slice.length);
-      let next = 0;
-
-      const lane = async () => {
-        for (;;) {
-          const i = next++;
-          if (i >= slice.length || cancelStream) return;
-          let buf = null;
-          for (let attempt = 0; attempt < 3 && !buf; attempt++) {
-            try {
-              buf = await fetchBuf(slice[i], viaProxy);
-            } catch (e) {
-              if (attempt === 0) viaProxy = true;        // page fetch blocked: use the worker
-              else if (attempt === 2) { cancelStream = true; throw e; }
-            }
-          }
-          bufs[i] = buf;
-          onProgress(++done, urls.length);
-        }
-      };
-
-      await Promise.all(Array.from({ length: Math.min(LANES, slice.length) }, lane));
-      if (cancelStream) break;
-      blob = new Blob([blob].concat(bufs), { type: mime });
-    }
-    return blob;
-  }
+  /* ------------------------------------------------------ streamed video */
 
   const X_MEDIA_ID = /\/(?:ext_tw_video|amplify_video|tweet_video)(?:_thumb)?\/(\d+)\//;
 
@@ -769,104 +657,57 @@
 
   const hostToken = () => location.hostname.replace(/^www\./, '');
 
-  // Returns true when the stream was handled (saved, refused, or cancelled),
-  // false when no stream URL was ever seen for this video.
+  // Stream jobs this tab has running. The service worker tells every frame
+  // when one starts and ends, so Escape can cancel from wherever focus is.
+  let streaming = 0;
+
+  // A streamed video is rebuilt by the extension's worker page, not here: it
+  // takes a while, it should not block other grabs, and it should survive this
+  // page navigating away. Returns true when the stream was taken on (or
+  // refused with a reason), false when no stream was ever seen for this video.
   async function grabStream(videoEl) {
     const mediaId = streamMediaId(videoEl);
-    const found = await ask({ type: 'findStream', mediaId });
-    if (!found || !found.url) return false;
-
-    // Several streams on the page and nothing tying one of them to this video:
-    // the most recent is only a guess, and the user has to be told so.
-    const guess = found.guessed && found.streams > 1
-      ? ' - best guess: this page loaded ' + found.streams + ' streams and none could be matched to this video'
-      : '';
-
     const who = statusInfo(videoEl);
-    const stem = who ? who.user + '-' + who.id : (mediaId ? 'video-' + mediaId : 'video');
+    const tokens = {
+      name: who ? who.user + '-' + who.id : (mediaId ? 'video-' + mediaId : 'video'),
+      ext: 'mp4', kind: 'video', host: hostToken(), title: document.title || '', alt: ''
+    };
+    const res = await ask({ type: 'grabStream', mediaId, tokens, pageUrl: location.href });
+    if (!res || !res.found) return false;
 
-    // A progressive file was served after all: normal download path.
-    if (/\.mp4(\?|$)/i.test(found.url)) {
-      const tok = { name: stem, ext: 'mp4', kind: 'video', host: hostToken(), title: document.title || '', alt: '' };
-      const res = await ask({ type: 'grab', candidates: [{ url: found.url, tokens: tok }], pageUrl: location.href });
-      if (res && res.ok) { toast('Saved ' + res.filename + guess, guess ? 'warn' : 'ok'); return true; }
-      const fb = await fallback(found.url, (res && res.filename) || stem + '.mp4');
-      if (fb.ok) toast('Saved ' + savedText(fb.saved) + guess, guess ? 'warn' : 'ok');
-      else toast('Could not save this video: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err');
+    // The page was given a whole file after all.
+    if (res.direct) {
+      if (res.cancelled) return true;
+      if (res.ok) { toast('Saved ' + res.filename + (res.guess || ''), res.guess ? 'warn' : 'ok'); return true; }
+      const fb = await fallback(res.url, res.filename || tokens.name + '.mp4');
+      if (fb.ok) announce('Saved ', fb.saved, res.guess, res.guess ? 'warn' : 'ok');
+      else toast('Could not save this video: ' + (fb.reason || res.error || 'the site blocked it'), 'err');
       return true;
     }
 
-    cancelStream = false;
-    toast('Reading stream playlist...', 'warn');
-
-    let playlistUrl = found.url;
-    let text = await fetchText(playlistUrl);
-    let height = 0;
-    let videoOnly = false;
-
-    if (/#EXT-X-STREAM-INF/i.test(text)) {
-      // A separate audio rendition means the variants carry video only, and
-      // muxing them is beyond what a page can do. Say so rather than quietly
-      // handing over a silent file.
-      videoOnly = /#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*URI="/i.test(text);
-      const variants = parseMaster(text, playlistUrl);
-      if (!variants.length) { toast('Could not read the stream playlist.', 'err'); return true; }
-      variants.sort((a, b) => (b.height - a.height) || (b.bandwidth - a.bandwidth));
-      height = variants[0].height;
-      playlistUrl = variants[0].url;
-      text = await fetchText(playlistUrl);
-    }
-
-    const blocked = playlistBlocker(text);
-    if (blocked) { toast(blocked, 'err'); return true; }
-
-    const { init, segs } = parseMedia(text, playlistUrl);
-    if (!segs.length) { toast('That stream playlist had no segments.', 'err'); return true; }
-    if (segs.length > MAX_SEGMENTS) {
-      toast('That stream is too long to reassemble (' + segs.length + ' segments).', 'err');
+    if (!res.started) {
+      toast('Could not save this video: ' + (res.error || 'the download did not start'), 'err');
       return true;
     }
-    // Fragmented MP4 carries its moov in the init segment. Without it the
-    // concatenation is unplayable, so do not pretend otherwise.
-    if (/\.m4s(\?|$)/i.test(segs[0]) && !init) {
-      toast('This stream has no init segment, so its pieces cannot be joined into a playable file.', 'err');
-      return true;
-    }
-
-    const onEsc = (e) => { if (e.key === 'Escape') cancelStream = true; };
-    window.addEventListener('keydown', onEsc, true);
-
-    try {
-      const ts = /\.ts(\?|$)/i.test(segs[0]);
-      const mime = ts ? 'video/mp2t' : 'video/mp4';
-      const blob = await assembleStream(init ? [init].concat(segs) : segs, mime, (done, total) => {
-        toast('Downloading video: ' + done + ' / ' + total + ' segments (Esc to cancel)', 'warn');
-      });
-      if (cancelStream) { toast('Cancelled.', 'warn'); return true; }
-
-      const tok = {
-        name: stem + (height ? '-' + height + 'p' : ''),
-        ext: ts ? 'ts' : 'mp4',
-        kind: 'video', host: hostToken(), title: document.title || '', alt: ''
-      };
-      const named = await ask({ type: 'buildName', tokens: tok });
-      const saved = await saveBlob(blob, (named && named.path) || tok.name + '.' + tok.ext);
-      toast('Saved ' + savedText(saved) + ' (' + sizeText(blob.size) + ')' +
-            (videoOnly ? ' - video only, this stream keeps audio in a separate track' : '') + guess,
-            guess ? 'warn' : 'ok');
-      return true;
-    } catch (e) {
-      toast('Stream download failed: ' + ((e && e.message) || e), 'err');
-      return true;
-    } finally {
-      cancelStream = false;
-      window.removeEventListener('keydown', onEsc, true);
-    }
+    toast('Reading the stream... (Esc to cancel)', 'warn');
+    return true;
   }
+
+  window.addEventListener('keydown', (e) => {
+    if (dead || !streaming || e.key !== 'Escape') return;
+    ask({ type: 'cancelStreams' });
+  }, true);
 
   // The guard is claimed before the first await, so a double tap cannot start
   // two assemblies of the same video.
   async function grab() {
+    if (dead) return;
+    if (!alive()) {
+      // The extension was updated or removed and this copy was not replaced.
+      dead = true;
+      showToast('Snaffle was updated. Reload this page to use it here.', 'warn');
+      return;
+    }
     if (!cfg.enabled || busy) return;
     busy = true;
     try {
@@ -912,20 +753,9 @@
     if (/^(data|blob):/i.test(hit.url)) {
       const tok = tokensFor(hit);
       const named = await ask({ type: 'buildName', tokens: tok });
-      const path = (named && named.path) || tok.name + '.' + tok.ext;
-      let saved = null;
-      if (/^data:/i.test(hit.url)) {
-        const res = await ask({ type: 'saveData', dataUrl: hit.url, filename: path });
-        if (res && res.ok) saved = { name: res.filename, filed: true };
-      } else {
-        saved = await saveBlob(await (await fetch(hit.url)).blob(), path);
-      }
-      if (!saved) {
-        const name = path.split('/').pop();
-        await pageDownload(hit.url, name, false);
-        saved = { name, filed: false };
-      }
-      toast(prefix + savedText(saved), 'ok');
+      const blob = /^data:/i.test(hit.url) ? dataUrlToBlob(hit.url) : await (await fetch(hit.url)).blob();
+      if (!blob) { toast('That image could not be read.', 'err'); return; }
+      announce(prefix, await saveBlob(blob, (named && named.path) || tok.name + '.' + tok.ext));
       return;
     }
 
@@ -940,7 +770,7 @@
 
     const last = candidates[candidates.length - 1];
     const fb = await fallback(last.url, (res && res.filename) || last.tokens.name + '.' + last.tokens.ext);
-    if (fb.ok) toast(prefix + savedText(fb.saved), 'ok');
+    if (fb.ok) announce(prefix, fb.saved);
     else toast('Could not save this: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err');
   }
 
@@ -951,12 +781,15 @@
   // download plumbing rather than duplicating it.
   const api = {
     get cfg() { return cfg; },
-    ui, toast, flash, ask, pageDownload, saveBlob, savedText, fallback, fetchBuf,
+    alive,
+    retire() { dead = true; if (shadowHost) shadowHost.remove(); },
+    ui, toast, flash, ask, pageDownload, saveBlob, savedText, announce, fallback,
     resolve, elementStack, ancestors, tokensFor, statusInfo, hostToken,
     fromImg, fromVideo, fromBackground,
     abs, upgrade, parseSrcset, grab,
-    capture: null,   // set by capture.js
-    gallery: null    // set by gallery.js
+    capture: null,        // set by capture.js when it is loaded on demand
+    gallery: null,        // set by gallery.js likewise, in the top frame
+    galleryLoaded: false  // set by gallery.js in every frame it is loaded into
   };
   window.__SNAFFLE = api;
 
@@ -987,18 +820,23 @@
     });
   }
 
+  // The screenshot and media-list code is not in the page until it is asked
+  // for. The service worker loads it into the top frame and starts it, which
+  // also covers a key pressed while focus is inside an iframe.
+  function runFeature(name) {
+    ask({ type: 'feature', name }).then((r) => { if (r && r.error) toast(r.error, 'err'); });
+  }
+
   // Each binding is checked against the same event, most specific first - a
   // three-modifier combo must win over a two-modifier one that shares its key.
-  // Capture and the gallery live in the top frame. A key pressed inside an
-  // iframe is relayed there rather than silently doing nothing.
   const KEY_ACTIONS = [
-    ['captureKey', () => (api.capture ? api.capture() : ask({ type: 'relayTop', action: 'captureNow' }))],
-    ['galleryKey', () => (api.gallery ? api.gallery() : ask({ type: 'relayTop', action: 'galleryNow' }))],
+    ['captureKey', () => runFeature('capture')],
+    ['galleryKey', () => runFeature('gallery')],
     ['key', keyGrab]
   ];
 
   window.addEventListener('keydown', (e) => {
-    if (!cfg.enabled || e.repeat || isTyping(e)) return;
+    if (dead || !cfg.enabled || e.repeat || isTyping(e)) return;
     for (const [name, run] of KEY_ACTIONS) {
       if (!keyMatches(cfg[name], e)) continue;
       e.preventDefault();
@@ -1032,6 +870,7 @@
 
   for (const type of SEQUENCE) {
     window.addEventListener(type, (e) => {
+      if (dead) return;
       if (type === 'pointerdown') {
         if (!triggerMatches(e)) return;
         hide(e);
@@ -1056,7 +895,7 @@
   /* --------------------------------------------------- messages from bg */
 
   chrome.runtime.onMessage.addListener((msg, _s, send) => {
-    if (!msg) return false;
+    if (!msg || dead) return false;
     if (msg.type === 'grabNow') {
       // Broadcast to every frame. Only the one the pointer is in answers, so
       // the sender can tell whether anybody took it.
@@ -1066,14 +905,16 @@
     } else if (msg.type === 'downloadFailed') {
       // A download that started and then died. Never leave "Saved" standing.
       fallback(msg.url, msg.filename).then((fb) => {
-        if (fb.ok) toast('Saved ' + savedText(fb.saved), 'ok');
+        if (fb.ok) announce('Saved ', fb.saved);
         else toast('Could not save ' + String(msg.filename).split('/').pop() + ': ' + (fb.reason || msg.error || 'the site blocked it'), 'err');
       });
       send({ ok: true });
     } else if (msg.type === 'toast') {
       if (window.top === window) showToast(msg.text, msg.kind);
       send({ ok: true });
-    } else if (msg.type === 'captureNow') { if (api.capture) api.capture(); send({ ok: true }); }
+    } else if (msg.type === 'streamStarted') { streaming++; send({ ok: true }); }
+    else if (msg.type === 'streamEnded') { streaming = Math.max(0, streaming - 1); send({ ok: true }); }
+    else if (msg.type === 'captureNow') { if (api.capture) api.capture(); send({ ok: true }); }
     else if (msg.type === 'galleryNow') { if (api.gallery) api.gallery(); send({ ok: true }); }
     return false;
   });

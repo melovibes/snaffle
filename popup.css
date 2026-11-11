@@ -90,3 +90,4 @@ button:hover { filter: brightness(1.08); }
 button.ghost:hover { border-color: var(--accent); filter: none; }
 
 .note { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.note.warn { color: #dc2626; font-weight: 600; }

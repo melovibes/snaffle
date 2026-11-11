@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
+const S = require('../shared.js');
+const H = require('../hls.js');
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
 let fails = 0;
@@ -103,9 +105,7 @@ eq('srcset comma inside query', [set3.length, set3[0].url], [1, 'https://x.com/i
 
 /* -------------------------------------------------------------- hls playlists */
 
-const { parseMaster, parseMedia, playlistBlocker } = lift('content.js',
-  'function parseMaster(text, base)', 'async function assembleStream(',
-  ['parseMaster', 'parseMedia', 'playlistBlocker']);
+const { parseMaster, parseMedia, playlistBlocker, bestVariant, hasSplitAudio } = H;
 
 const MASTER_URL = 'https://video.twimg.com/ext_tw_video/1234567890/pu/pl/aBcDeF.m3u8';
 const master = [
@@ -117,10 +117,14 @@ const master = [
 ].join('\n');
 const variants = parseMaster(master, MASTER_URL);
 eq('master variant count', variants.length, 2);
-variants.sort((a, b) => (b.height - a.height) || (b.bandwidth - a.bandwidth));
-eq('tallest variant wins', variants[0].url,
+eq('tallest variant wins', bestVariant(variants).url,
   'https://video.twimg.com/ext_tw_video/1234567890/pu/pl/720x1280/high.m3u8');
-eq('variant height recorded', variants[0].height, 1280);
+eq('variant height recorded', bestVariant(variants).height, 1280);
+eq('a muxed master has no split audio', hasSplitAudio(master), false);
+eq('a separate audio rendition is recognised',
+  hasSplitAudio('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en",URI="audio.m3u8"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO="a"\nv.m3u8'), true);
+eq('an audio rendition muxed into the video (no URI) is not split audio',
+  hasSplitAudio('#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="en"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO="a"\nv.m3u8'), false);
 eq('comment between tag and uri',
   parseMaster('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=9\n# note\nv/360.m3u8',
     'https://cdn.example.com/a/master.m3u8')[0].url,
@@ -150,9 +154,7 @@ eq('byterange refused',
 
 /* ----------------------------------------------------------- file names */
 
-const nameHelpers = lift('background.js', 'function sanitizeSegment(s)',
-  'async function nextIndex()', ['sanitizeSegment', 'applyTemplate'],
-  { pad: (n) => String(n).padStart(2, '0') });
+const nameHelpers = S;
 
 eq('spaces and dashes kept', nameHelpers.sanitizeSegment('my photo-01.jpg'), 'my photo-01.jpg');
 eq('illegal characters replaced', nameHelpers.sanitizeSegment('a/b:c*d?e"f<g>h|i'), 'a_b_c_d_e_f_g_h_i');
@@ -164,10 +166,39 @@ eq('unknown token kept verbatim',
   nameHelpers.applyTemplate('{name}-{bogus}.{ext}', { name: 'pic', ext: 'jpg' }, 1), 'pic-{bogus}.jpg');
 eq('index zero padded', nameHelpers.applyTemplate('{index}', {}, 42), '0042');
 
+/* ----------------------------------------------------------------- config */
+
+eq('nothing stored means the defaults', S.effective(undefined).folder, 'Snaffle/{host}');
+eq('unchanged settings store nothing but the version', S.toStore(S.effective(null)), { v: S.CFG_VERSION });
+eq('only the changed setting is stored',
+  S.toStore(Object.assign(S.effective(null), { saveAs: true })), { v: S.CFG_VERSION, saveAs: true });
+
+// What version 1.0 wrote at install: every default, including ones since changed.
+const frozen = {
+  enabled: true,
+  key: { enabled: true, code: 'KeyD', label: 'Alt + D', ctrl: false, alt: true, shift: false, meta: false },
+  mouse: { enabled: true, button: 1, label: 'Alt + Middle click', ctrl: false, alt: true, shift: false, meta: false },
+  folder: 'HoverGrab/{host}', template: '{name}.{ext}', upgrade: true, toast: true
+};
+eq('an install-time copy of old defaults is not treated as a choice', S.toStore(frozen), { v: S.CFG_VERSION });
+eq('so the old default folder gives way to the new one', S.effective(frozen).folder, 'Snaffle/{host}');
+eq('and the old default shortcut gives way to the new one', S.keyLabel(S.effective(frozen).key), 'Alt + S');
+eq('a real choice inside an old config survives',
+  S.toStore(Object.assign({}, frozen, { folder: 'Pictures/{date}', key: Object.assign({}, frozen.key, { code: 'KeyG' }) })),
+  { v: S.CFG_VERSION, key: { enabled: true, code: 'KeyG', ctrl: false, alt: true, shift: false, meta: false }, folder: 'Pictures/{date}' });
+eq('a partly-set binding is completed from the defaults', S.effective({ mouse: { button: 2 } }).mouse,
+  { enabled: true, button: 2, ctrl: false, alt: true, shift: false, meta: false });
+eq('unknown keys are dropped', S.toStore({ nonsense: 1 }), { v: S.CFG_VERSION });
+eq('labels', [S.keyLabel(S.DEFAULTS.captureKey), S.mouseLabel(S.DEFAULTS.mouse), S.keyLabel(S.DEFAULTS.key, true)],
+  ['Alt + Shift + S', 'Alt + Middle click', 'Option + S']);
+eq('path building', S.buildPath({ name: 'pic', ext: 'jpg', host: 'example.com' }, { folder: 'Snaffle/{host}', template: '{name}.{ext}' }, 7),
+  'Snaffle/example.com/pic.jpg');
+eq('an empty name falls back to the host', S.buildPath({ name: '', ext: 'png', host: 'example.com' }, { folder: '', template: '{name}.{ext}' }, 7),
+  'example.com.png');
+
 /* ------------------------------------------------- download verdict helpers */
 
-const dl = lift('background.js', 'const MIME_EXT = {', '// Runs for every download in the browser',
-  ['nameForMime', 'notMedia']);
+const dl = S;
 
 eq('extension-less name takes the served type', dl.nameForMime('Snaffle/x/808080.jpg', 'image/webp'), 'Snaffle/x/808080.webp');
 eq('jpg address serving webp is renamed', dl.nameForMime('photo.jpg', 'image/webp; charset=binary'), 'photo.webp');
@@ -257,26 +288,37 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
 
   // Every id the options page collects must exist as a default, or Save writes
   // a key nothing reads.
-  const optionsSrc = read('options.js');
-  const flags = /const FLAGS = \[([\s\S]*?)\];/.exec(optionsSrc)[1]
-    .match(/'([^']+)'/g).map((s) => s.replace(/'/g, ''));
-  const defaults = /const DEFAULTS = \{([\s\S]*?)\n\};/.exec(optionsSrc)[1];
-  const missingDefaults = flags.filter((f) => !new RegExp('\\b' + f + ':').test(defaults));
-  eq('every options flag has a default', missingDefaults, []);
+  const flags = /const FLAGS = \[([\s\S]*?)\];/.exec(read('options.js'))[1]
+    .match(/'([^']+)'/g).map((x) => x.replace(/'/g, ''));
+  eq('every options flag has a default', flags.filter((k) => !(k in S.DEFAULTS)), []);
 
   // The three key bindings must not ship colliding defaults.
-  const sigs = ['key', 'captureKey', 'galleryKey'].map((f) => {
-    const line = new RegExp('\\b' + f + ': \\{([^}]*)\\}').exec(defaults)[1];
-    return ['code', 'ctrl', 'alt', 'shift', 'meta']
-      .map((k) => (new RegExp(k + ": '?([^,'}]+)'?").exec(line) || [])[1]).join('|');
+  const sigs = ['key', 'captureKey', 'galleryKey'].map((k) => {
+    const b = S.DEFAULTS[k];
+    return [b.code, b.ctrl, b.alt, b.shift, b.meta].join('|');
   });
   eq('default key bindings are distinct', new Set(sigs).size, sigs.length);
 
-  // Content scripts load in manifest order and the later two need the shared
-  // object the first one publishes.
+  // Only the core is in every frame of every page. The screenshot and media
+  // list code is loaded into a tab when asked for.
   const manifest = JSON.parse(read('manifest.json'));
-  eq('content scripts load core first',
-    manifest.content_scripts[0].js, ['content.js', 'capture.js', 'gallery.js']);
+  eq('always-on content scripts are the shared module and the core, in that order',
+    manifest.content_scripts[0].js, ['shared.js', 'content.js']);
+
+  // Every file the extension loads at run time must exist.
+  const wantedFiles = ['shared.js', 'hls.js', 'offscreen.html', 'offscreen.js', 'capture.js', 'gallery.js',
+    'vendor/mediabunny.min.mjs', 'vendor/mediabunny.LICENSE.txt', manifest.background.service_worker, manifest.options_page];
+  eq('every file loaded at run time is present', wantedFiles.filter((x) => !fs.existsSync(path.join(ROOT, x))), []);
+  eq('the worker page loads its scripts in dependency order',
+    [...read('offscreen.html').matchAll(/src="([^"]+)"/g)].map((m) => m[1]), ['shared.js', 'hls.js', 'offscreen.js']);
+  for (const html of ['options.html', 'popup.html']) {
+    eq(html + ' loads the shared module before its own script',
+      [...read(html).matchAll(/<script src="([^"]+)"/g)].map((m) => m[1])[0], 'shared.js');
+  }
+  eq('permissions cover what the service worker calls',
+    ['scripting', 'offscreen', 'declarativeNetRequestWithHostAccess', 'downloads', 'webRequest', 'storage', 'contextMenus']
+      .filter((p) => !manifest.permissions.includes(p)), []);
+  eq('manifest description fits the store limit', manifest.description.length <= 132, true);
   const api = /const api = \{([\s\S]*?)\n  \};/.exec(read('content.js'))[1];
   const used = new Set();
   for (const f of ['capture.js', 'gallery.js']) {

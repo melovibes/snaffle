@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>One stream fixture</title>
+<style>
+  body { margin: 0; }
+  video { position: absolute; top: 10px; left: 10px; width: 200px; height: 150px; background: #000; }
+  img { position: absolute; top: 10px; left: 230px; width: 200px; height: 150px; }
+</style>
+</head>
+<body>
+<!-- One streamed video whose playlist is named in the query string, and one
+     ordinary image beside it. No media id anywhere, and only one stream. -->
+<video id="v" poster="/img/200x150/505050/poster.png"></video>
+<img id="pic" src="/img/200x150/0a7a0a/beside.png">
+<script>
+  const src = new URLSearchParams(location.search).get('src');
+  document.getElementById('v').src = URL.createObjectURL(new MediaSource());
+  fetch(src, { mode: 'no-cors' }).then(() => { document.title = 'One stream fixture ready'; });
+</script>
+</body>
+</html>

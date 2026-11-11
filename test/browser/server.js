@@ -71,6 +71,7 @@ function fakeHls(vid, file) {
 
 function start(port, peerPort) {
   const log = [];
+  let slowMs = 0;   // per-segment delay for /real and /guarded, set by a test
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1:' + port);
@@ -112,6 +113,25 @@ function start(port, peerPort) {
       if (body == null) return send(404, 'text/plain', 'no such piece');
       const type = /\.m3u8$/.test(m[3]) ? TYPES['.m3u8'] : 'video/mp4';
       return send(200, type, body, m[1] === 'hls' ? CORS : {});
+    }
+
+    // Real ffmpeg-made streams: /real/<set>/<file>. `guarded` serves the same
+    // files behind a Referer check, the way hotlink-protected CDNs serve video.
+    // ?slow=N delays each segment by N ms, to keep a download running.
+    if ((m = /^\/(real|guarded)\/([a-z]+)\/([^/]+)$/.exec(p))) {
+      if (m[1] === 'guarded' && !/^http:\/\/127\.0\.0\.1:\d+\//.test(req.headers.referer || '')) {
+        return send(403, 'text/plain', 'referer required', CORS);
+      }
+      const file = path.join(MEDIA, m[2], m[3]);
+      if (!fs.existsSync(file)) return send(404, 'text/plain', 'missing', CORS);
+      const ext = path.extname(file);
+      const type = TYPES[ext] || (ext === '.ts' ? 'video/mp2t' : 'application/octet-stream');
+      const slow = /\.(m4s|ts)$/.test(file) ? slowMs : 0;
+      return setTimeout(() => send(200, type, fs.readFileSync(file), CORS), slow);
+    }
+    if ((m = /^\/vendor\/([^/]+)$/.exec(p))) {
+      const file = path.join(__dirname, '..', '..', 'vendor', m[1]);
+      if (fs.existsSync(file)) return send(200, 'text/javascript', fs.readFileSync(file), CORS);
     }
 
     // A real fMP4 HLS stream under X-shaped paths, so the media id in the
@@ -157,6 +177,7 @@ function start(port, peerPort) {
       origin: 'http://127.0.0.1:' + port,
       log,
       mark: () => log.length,
+      slow: (ms) => { slowMs = ms; },
       since: (mark) => log.slice(mark),
       close: () => new Promise((r) => server.close(r))
     }));

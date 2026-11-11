@@ -34,13 +34,33 @@ Fixed, each with a check that now passes:
 
 Changed but not solved: with no media id and several streams on a page, Snaffle still takes the most recent stream, which can be the wrong video. It now says so in the toast (S02). Matching a stream to its video element on sites other than X is still open.
 
+## Status after Phase 2 (v1.2.0)
+
+**59 checks: 51 pass, 8 known defects, 1 not observable under automation.**
+
+Phase 2 moved the heavy work out of the page and the service worker into a hidden worker page, bundled the Mediabunny library to rebuild streams, and put the shared code in one module.
+
+| Defect | Now | Checks |
+| --- | --- | --- |
+| Split-audio streams saved without sound | Merged into one file with sound | S04 |
+| Joined files showed the wrong length in strict players; MPEG-TS saved as `.ts` | Written as a real MP4 with an index | S01, S09, S10 |
+| A long video blocked every other grab and died with its tab | Runs in the worker page; other grabs proceed, navigation does not stop it, Escape cancels | S12, S13, S14 |
+| Service worker fetched any URL and returned the bytes | No message returns fetched bytes; the read-back handler is gone | X02 |
+| Defaults written to storage at install | Only changes are stored; old full copies are slimmed on update | P05, P06 |
+| Files over 24 MB fell out of the folder | Bytes go to the worker page in chunks, at any size | G09, G10, G14, C01 |
+| 1,500 lines injected into every frame | Screenshot and media-list code load on demand | F01 |
+| Popup buttons did nothing on pages without the script | The script is loaded first; untouchable pages get a message | F01, F02 |
+| A URL with `.m3u8` in its query string was recorded as a playlist | Judged by path, navigations ignored | S07 |
+| Streams served only to their own site failed | A session rule adds the page as `Referer` | S11 |
+
+Found while building it, and fixed: the library retries a failed request for ever by default, so a cancelled or dead stream never ended. It now gives up after three tries, and cancelling ends the job at once.
+
+Not observable here, so unverified: the fresh copy of the content script injected into open tabs when the extension updates. Reloading an unpacked extension under automation removes it for good. What is checked is the two halves around it: injecting into a tab that already has a working copy does not double the grab (X03), and a copy that has lost the extension says to reload instead of half-working (X01).
+
 Still open, by phase:
 
 | Check | Defect | Phase |
 | --- | --- | --- |
-| S04 | Split-audio streams save without sound | 2 |
-| P05 | Defaults written to storage at install | 2 |
-| X02 | Service worker fetches any URL it is asked for | 2 |
 | L06 | Media list has no keyboard access | 3 |
 | P02 | Recorded shortcut not saved until Save is pressed | 3 |
 | C02 | Capture trusts `devicePixelRatio` instead of measuring the shot | 4 |
