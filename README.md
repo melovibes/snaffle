@@ -69,13 +69,13 @@ Video on X is not a file. The player fetches an HLS playlist and feeds thousands
 Snaffle does that:
 
 1. A `webRequest` listener records every `.m3u8` playlist and whole-file `.mp4` the page requests — playlists only, never the segment storm.
-2. On a grab, the hovered video's poster gives the media id. X repeats that same id in the video URL (`ext_tw_video/<id>/`), so the right playlist is matched exactly even with a dozen videos in one timeline. If the id matches nothing, Snaffle refuses rather than guessing and handing you the wrong video.
+2. On a grab, the hovered video's poster gives the media id. X repeats that same id in the video URL (`ext_tw_video/<id>/`), so the right playlist is matched exactly even with a dozen videos in one timeline. If the poster carries an id that matches nothing, Snaffle refuses rather than hand you a different video. On sites with no id to match, it takes the most recent stream the page asked for; when the page has loaded more than one, the toast says the result is a best guess. Playlists Snaffle fetches for itself are not counted as the page's.
 3. The master playlist is parsed, the highest-resolution variant is chosen, and its segments are fetched six at a time with retries.
 4. The init segment and media segments are concatenated into one Blob and saved as `.mp4` (fragmented MP4) or `.ts` for legacy streams.
 
 The toast shows segment progress, and **Escape cancels**. Files land as `user-statusid-720p.mp4`, the resolution taken from the playlist. Turn it off with **Rebuild streamed video** in options, which reverts to saving the poster frame.
 
-It refuses, with a clear message, when a stream is encrypted (`#EXT-X-KEY` with real DRM), uses byte-range segments, or runs longer than 3000 segments. DRM-protected services are not defeated by this and are not meant to be — it works on X because X's segments are served unencrypted to any player.
+It refuses, with a clear message, when a stream is encrypted (`#EXT-X-KEY` with real DRM), uses byte-range segments, or runs longer than 1200 segments. DRM-protected services are not defeated by this and are not meant to be — it works on X because X's segments are served unencrypted to any player.
 
 For a site whose CDN refuses cross-origin reads, segment fetching falls back to the service worker, which has host permissions.
 
@@ -124,11 +124,17 @@ Defaults: folder `Snaffle/{host}`, name `{name}.{ext}` — so a photo from examp
 
 ## How downloads are attempted
 
-1. **Downloads API** with the resolved URL — normal path, respects your subfolder and the uniquify rule
-2. **Page-context fetch** if that fails or the server rejects it — the page's own cookies and `Referer` apply, which defeats most hotlink protection
-3. **Service-worker fetch** as a last resort, saved as a data URL (capped at 60 MB)
+Every address Snaffle works out is a guess about a server it does not control, so a grab carries a list of candidates: the rewritten full-resolution address first, then the un-rewritten one, ending with the address the page itself loaded.
 
-`data:` and `blob:` sources skip straight to step 2, since the browser cannot hand those to the Downloads API from another context.
+1. **Downloads API**, one candidate at a time. Snaffle waits for the server's answer before saying anything. A refusal, a 404, or a web page served where a file should be moves it to the next candidate, and the rejected download is removed from disk and from Chrome's list.
+2. **Page-context fetch** of the page's own address if every candidate fails. The page's cookies and `Referer` apply, which defeats most hotlink protection.
+3. **Service-worker fetch** as a last resort, capped at 60 MB.
+
+"Saved" appears only once a real file of the right kind is arriving. If all three fail the toast says why, and nothing is left behind.
+
+Bytes that exist only in the page (an encoded canvas, an inline SVG, a rebuilt video, a screenshot, a file recovered by step 2) are handed to the service worker so they land in your folder like everything else. Above 24 MB that hand-off is not possible, and the file is saved to the Downloads root instead; the toast says so when it happens.
+
+Once the server has said what a file really is, its extension is corrected to match: a `.jpg` address that serves WebP is saved as `.webp`.
 
 ## Files
 
@@ -141,7 +147,9 @@ Defaults: folder `Snaffle/{host}`, name `{name}.{ext}` — so a photo from examp
 | `background.js` | filename building, downloads, retries, playlist sniffer, screenshots, context menu |
 | `options.html/.css/.js` | settings with key and mouse recorders |
 | `popup.html/.css/.js` | on/off switch, trigger summary, capture and list buttons |
-| `test/snaffle.test.js` | offline checks — `node test/snaffle.test.js` |
+| `test/snaffle.test.js` | offline checks of the pure logic — `npm test` |
+| `test/browser/` | the real extension in headless Chromium against local fixtures — `npm run test:browser` |
+| `docs/phase0-findings.md` | what the first browser run found, and what is still open |
 | `icons/` | generated PNG icons |
 
 `capture.js` and `gallery.js` are separate content scripts in the same isolated world. `content.js` publishes a shared object (`window.__SNAFFLE`) holding the UI and download plumbing, and they attach themselves to it, so manifest load order matters. A test enforces both the order and that neither file reaches for a helper the core does not export.
@@ -159,12 +167,18 @@ pwsh -File tools/make-icons.ps1
 ## Tests
 
 ```
-node test/snaffle.test.js
+npm install
+npm test              # 71 offline checks, a second or two
+npm run test:browser  # 49 checks in headless Chromium, about three minutes
 ```
 
-55 checks over the parts that are easy to break and invisible in a browser: URL rewriting per site, `srcset` parsing, HLS master/media playlists and each refusal condition, file-name sanitizing and templates, the PDF writer's xref byte offsets, and static wiring — that every element id the UI scripts reach for exists in their HTML, that every saved option has a default, that the three key bindings do not ship colliding defaults.
+**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, HLS playlists and each refusal condition, file naming, content-type verdicts, stream grouping, the PDF writer's byte offsets, and static wiring between the scripts and their HTML.
 
-The DOM and network halves are not covered: hover resolution, click suppression, the sniffer, segment assembly, and the screenshot stitching all need a real browser.
+**Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. The saved bytes are read back, so a rebuilt video is compared byte for byte and run through `ffprobe`, and a screenshot is decoded and sampled.
+
+Checks for defects that are understood but not yet fixed are listed in `KNOWN_FAILING` at the top of `test/browser/run.js`, each with the phase that fixes it. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale.
+
+Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the toolbar popup's buttons, and the file-extension correction, which Chrome skips when downloads are driven by the automation protocol.
 
 ## Troubleshooting
 
@@ -187,7 +201,7 @@ Snaffle cancels the entire click sequence (`pointerdown` through `auxclick`) whe
 
 **A video on X saves the poster image instead of the video.** Snaffle never saw the playlist, because the tab was loaded before the extension was installed or reloaded, or the video has not been played yet. Reload the tab, let the video start, then grab. The playlist is recorded the moment the player requests it.
 
-**"That stream is too long to reassemble."** Over 3000 segments. That is roughly a feature-length video, and reassembling it in a browser tab is not sensible.
+**"That stream is too long to reassemble."** Over 1200 segments. That is roughly an hour of video, and reassembling it in a browser tab is not sensible.
 
 ## Notes and limits
 

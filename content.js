@@ -45,22 +45,39 @@
 
   /* ---------------------------------------------------------------- hover */
 
-  let hoverTarget = null;
+  let hoverTarget = null;      // innermost element under the pointer in this frame
+  let lastEventTarget = null;
+  let pointerInside = false;   // is the pointer over this frame's document at all
   let outlineQueued = false;
   const cursor = { x: 0, y: 0 };
   const capture = { capture: true, passive: true };
 
-  // Only the target is kept. Resolving the ancestor chain is deferred to the
-  // moment of a grab, so hovering costs nothing on a busy page.
+  // Events from inside a shadow root arrive retargeted to the host. The first
+  // entry of the composed path is the element the pointer is really on.
+  const deepTarget = (e) => (e.composedPath && e.composedPath()[0]) || e.target;
+
   document.addEventListener('mousemove', (e) => {
     cursor.x = e.clientX; cursor.y = e.clientY;
-    if (e.target !== hoverTarget) { hoverTarget = e.target; queueOutline(); }
+    pointerInside = true;
+    if (e.target !== lastEventTarget) { lastEventTarget = e.target; hoverTarget = deepTarget(e); queueOutline(); }
   }, capture);
 
   document.addEventListener('mouseover', (e) => {
-    hoverTarget = e.target;
+    pointerInside = true;
+    lastEventTarget = e.target;
+    hoverTarget = deepTarget(e);
     queueOutline();
   }, capture);
+
+  // No related target means the pointer left this document altogether - into
+  // the parent page, or out of the window. Entering a child iframe does not
+  // count: the iframe element itself is the related target.
+  document.addEventListener('mouseout', (e) => {
+    if (!e.relatedTarget) pointerInside = false;
+  }, capture);
+
+  // The pointer is over an embedded frame, whose contents this frame cannot see.
+  const overFrame = () => !!hoverTarget && /^(IFRAME|FRAME)$/.test(hoverTarget.tagName || '');
 
   function queueOutline() {
     if (!cfg.enabled || !cfg.outline || outlineQueued) return;
@@ -68,8 +85,16 @@
     requestAnimationFrame(() => { outlineQueued = false; paintOutline(); });
   }
 
-  // The same nodes composedPath() would give - a ShadowRoot has no parentNode,
-  // so stepping to its host crosses the boundary.
+  // Content scripts may look inside closed shadow roots as well as open ones.
+  function shadowOf(el) {
+    try {
+      if (chrome.dom && chrome.dom.openOrClosedShadowRoot) return chrome.dom.openOrClosedShadowRoot(el);
+    } catch (_) {}
+    return el.shadowRoot || null;
+  }
+
+  // Composed ancestors: a ShadowRoot has no parentNode, so stepping to its
+  // host crosses the boundary.
   function ancestors(node) {
     const out = [];
     let n = node;
@@ -80,14 +105,46 @@
     return out;
   }
 
-  function elementStack(start) {
-    const els = [];
+  // Everything painted under the pointer, topmost first, shadow roots opened.
+  // Paint order is the order that matches what the user is looking at: an
+  // image under a transparent overlay comes before the card behind them both.
+  function stackAt(x, y) {
+    const out = [];
     const seen = new Set();
-    const add = (n) => { if (n && n.nodeType === 1 && !seen.has(n)) { seen.add(n); els.push(n); } };
-    for (const n of ancestors(start || hoverTarget)) add(n);
-    // Overlay-covered media (X, Instagram, lightboxes) sits *under* the topmost element.
-    try { for (const n of document.elementsFromPoint(cursor.x, cursor.y)) add(n); } catch (_) {}
-    return els;
+    const visit = (root, depth) => {
+      let els = [];
+      try { els = root.elementsFromPoint(x, y); } catch (_) {}
+      for (const el of els) {
+        // A shadow root's answer includes the outer page; keep only its own.
+        if (seen.has(el) || el.getRootNode() !== root) continue;
+        const inner = depth < 6 ? shadowOf(el) : null;
+        if (inner) visit(inner, depth + 1);     // its contents paint in its place
+        seen.add(el);
+        out.push(el);
+      }
+    };
+    visit(document, 0);
+    return out;
+  }
+
+  // Media the pointer is geometrically over, even if it cannot be hit-tested:
+  // sites put pointer-events:none on images to defeat "save image as".
+  function mediaAround(root, x, y) {
+    let best = null, bestArea = Infinity;
+    let list = [];
+    try { list = root.querySelectorAll('img, video, canvas'); } catch (_) {}
+    for (const el of list) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
+      const area = r.width * r.height;
+      if (area < bestArea) { best = el; bestArea = area; }
+    }
+    return best;
+  }
+
+  function elementStack() {
+    return stackAt(cursor.x, cursor.y);
   }
 
   /* --------------------------------------------------------- url helpers */
@@ -136,26 +193,35 @@
     try { u = new URL(url); } catch (_) { return url; }
     const host = u.hostname;
 
-    // Image proxies that embed the original URL (Substack, weserv, Cloudinary fetch, wp.com ...)
+    // Image proxies that embed the original URL (Substack, weserv, Cloudinary
+    // fetch, wp.com ...). Only unwrap when the embedded URL is itself a media
+    // file: tracking and referrer parameters carry encoded page URLs too, and
+    // following one of those downloads a web page.
+    const mediaUrl = (s) => {
+      try { return /\.(jpe?g|png|gif|webp|avif|bmp|svg|mp4|webm|mov)$/i.test(new URL(s).pathname); }
+      catch (_) { return false; }
+    };
     const embedded = /https?%3A%2F%2F[^\s"'&]+/i.exec(u.href);
     if (embedded) {
       try {
         const inner = decodeURIComponent(embedded[0]);
-        if (/^https?:\/\/.+\..+/.test(inner)) return inner;
+        if (mediaUrl(inner)) return inner;
       } catch (_) {}
     }
     const proxied = u.searchParams.get('url') || u.searchParams.get('src') || u.searchParams.get('image');
-    if (proxied && /^https?:\/\//i.test(proxied)) return proxied;
+    if (proxied && /^https?:\/\//i.test(proxied) && mediaUrl(proxied)) return proxied;
 
     // X / Twitter
     if (/(^|\.)twimg\.com$/.test(host)) {
       if (u.searchParams.has('name')) { u.searchParams.set('name', 'orig'); return u.href; }
       return u.href.replace(/:(thumb|small|medium|large)$/, ':orig');
     }
-    // Reddit previews -> the original upload
-    if (/(^|\.)redd\.it$/.test(host) && /^(preview|external-preview)\./.test(host)) {
+    // Reddit's own previews -> the original upload. external-preview images
+    // are other sites' pictures behind a signed URL; they have no i.redd.it copy.
+    if (host === 'preview.redd.it') {
       return 'https://i.redd.it' + u.pathname;
     }
+    if (host === 'external-preview.redd.it') return url;
     // Imgur thumbnail suffix (id + one size letter)
     if (/(^|\.)imgur\.com$/.test(host)) {
       const m = /^\/([A-Za-z0-9]{5,8})([bsmtlhg])(\.[a-z0-9]+)$/.exec(u.pathname);
@@ -170,18 +236,23 @@
     const fmt = u.searchParams.get('format');
     if (fmt && /^\d+w$/.test(fmt)) { u.searchParams.set('format', 'original'); return u.href; }
     // Shopify-style _1024x1024 before the extension
+    let changed = false;
     if (/cdn\.shopify\.com$/.test(host)) {
-      u.pathname = u.pathname.replace(/_(\d+x\d*|\d*x\d+|small|medium|large|grande|compact)(?=\.[a-z0-9]+$)/i, '');
+      const bare = u.pathname.replace(/_(\d+x\d*|\d*x\d+|small|medium|large|grande|compact)(?=\.[a-z0-9]+$)/i, '');
+      if (bare !== u.pathname) { u.pathname = bare; changed = true; }
     }
     // Generic resize params - skipped on signed URLs, which break if touched.
     const signed = u.searchParams.has('Signature') || u.searchParams.has('X-Amz-Signature') ||
-                   u.searchParams.has('sig') || /fbcdn\.net$|cdninstagram\.com$/.test(host);
+                   u.searchParams.has('sig') || u.searchParams.has('s') ||
+                   /fbcdn\.net$|cdninstagram\.com$/.test(host);
     if (!signed) {
       for (const p of ['w', 'h', 'width', 'height', 'quality', 'q', 'resize', 'fit', 'crop', 'dpr', 'size', 'maxwidth', 'maxheight']) {
-        u.searchParams.delete(p);
+        if (u.searchParams.has(p)) { u.searchParams.delete(p); changed = true; }
       }
     }
-    return u.href;
+    // Re-serialising re-encodes the query, so an address nothing was removed
+    // from is handed back exactly as it came.
+    return changed ? u.href : url;
   }
 
   /* ------------------------------------------------------ media resolver */
@@ -197,6 +268,7 @@
       return nat;
     };
 
+    const current = abs(img.currentSrc || img.getAttribute('src'), img);
     push(img.currentSrc, nat + 1);
     push(img.getAttribute('src'), nat);
 
@@ -207,9 +279,13 @@
       if (pic) pic.querySelectorAll('source[srcset]').forEach((s) => sets.push(s.getAttribute('srcset')));
       for (const s of sets) for (const c of parseSrcset(s)) push(c.url, scoreOf(c.desc));
 
+      // Lazy-load attributes hold all sorts of things - ids, JSON, flags. Only
+      // take one that reads as an address: absolute, or ending in an image type.
+      const plausible = (v) => /^(https?:)?\/\//i.test(v) || IMAGE_EXT.test(v);
       for (const attr of ['data-src', 'data-original', 'data-lazy-src', 'data-full-src', 'data-hi-res-src',
                           'data-zoom-image', 'data-large_image', 'data-image', 'data-actualsrc', 'data-echo']) {
-        if (img.hasAttribute(attr)) push(img.getAttribute(attr), nat * 1.2);
+        const v = (img.getAttribute(attr) || '').trim();
+        if (v && plausible(v)) push(v, nat * 1.2);
       }
       const dss = img.getAttribute('data-srcset');
       if (dss) for (const c of parseSrcset(dss)) push(c.url, scoreOf(c.desc) * 1.1);
@@ -217,7 +293,14 @@
 
     if (!cands.length) return null;
     cands.sort((a, b) => b.score - a.score);
-    return { url: upgrade(cands[0].u), kind: 'image', el: img, alt: img.alt || '' };
+    const up = upgrade(cands[0].u);
+    return { url: up, alts: fallbacks([cands[0].u, current], up), kind: 'image', el: img, alt: img.alt || '' };
+  }
+
+  // Every rewrite is a guess about a server we do not control, so each hit
+  // carries the addresses to fall back to, ending with what the page itself loaded.
+  function fallbacks(list, chosen) {
+    return list.filter((u, i) => u && u !== chosen && /^https?:/i.test(u) && list.indexOf(u) === i);
   }
 
   function fromVideo(v) {
@@ -228,8 +311,10 @@
       if (direct && !direct.startsWith('blob:')) url = direct;
     }
     const poster = abs(v.poster, v);
-    if (!url) return poster ? { url: poster, kind: 'image', el: v, posterOnly: true } : null;
-    return { url: url.startsWith('blob:') ? url : upgrade(url), kind: 'video', el: v, poster };
+    if (!url) return poster ? { url: poster, kind: 'image', el: v } : null;
+    if (url.startsWith('blob:')) return { url, kind: 'video', el: v, poster };
+    const up = upgrade(url);
+    return { url: up, alts: fallbacks([url], up), kind: 'video', el: v, poster };
   }
 
   function fromBackground(el) {
@@ -241,64 +326,100 @@
     if (!m || !m[2]) return null;
     const u = abs(m[2], el);
     if (!u) return null;
-    return { url: upgrade(u), kind: 'image', el, background: true };
+    const up = upgrade(u);
+    return { url: up, alts: fallbacks([u], up), kind: 'image', el };
   }
 
-  function fromCanvas(c) {
+  // Encoding a canvas or serialising an SVG is expensive, so a hit on one only
+  // promises to do it. The work happens when a grab actually goes ahead, not
+  // every time the outline wants to know what is under the pointer.
+  function encodeCanvas(c) {
     try {
       const d = c.toDataURL('image/png');
-      if (d && d.length > 32) return { url: d, kind: 'image', el: c, canvas: true };
+      if (d && d.length > 32) return { url: d };
     } catch (_) {
       return { error: 'That canvas holds cross-origin pixels and cannot be exported.' };
     }
-    return null;
+    return { error: 'That canvas is empty.' };
   }
 
-  function fromSvg(svg) {
+  function encodeSvg(svg) {
     try {
       const clone = svg.cloneNode(true);
       if (!clone.getAttribute('xmlns')) clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
       const str = new XMLSerializer().serializeToString(clone);
-      return { url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(str), kind: 'image', el: svg, svg: true };
-    } catch (_) { return null; }
+      return { url: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(str) };
+    } catch (_) {
+      return { error: 'That SVG could not be serialised.' };
+    }
   }
 
-  function resolve(els) {
-    let linkHref = '';
-    let softError = null;
+  function mediaFrom(el) {
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'img') return fromImg(el);
+    if (tag === 'video') return fromVideo(el);
+    if (tag === 'audio') {
+      const u = abs(el.currentSrc || el.getAttribute('src'), el);
+      return u ? { url: u, kind: 'audio', el } : null;
+    }
+    if (tag === 'canvas') return { url: '', kind: 'image', el, make: () => encodeCanvas(el) };
+    if (tag === 'svg') return { url: '', kind: 'image', el, make: () => encodeSvg(el) };
+    if (tag === 'image' && el.ownerSVGElement) {
+      const u = abs(el.getAttribute('href') || el.getAttribute('xlink:href'), el);
+      return u ? { url: u, kind: 'image', el } : null;
+    }
+    return null;
+  }
 
-    for (const el of els) {
-      const tag = (el.tagName || '').toLowerCase();
+  // The nearest enclosing link that points straight at a media file.
+  function linkFor(el) {
+    for (const n of ancestors(el)) {
+      if ((n.tagName || '').toLowerCase() !== 'a') continue;
+      const href = abs(n.getAttribute('href'), n);
+      if (href && MEDIA_EXT.test(href)) return href;
+    }
+    return '';
+  }
 
-      if (!linkHref && tag === 'a') {
-        const href = abs(el.getAttribute('href'), el);
-        if (href && MEDIA_EXT.test(href)) linkHref = href;
-      }
+  // `stack` is what is painted under the pointer, topmost first. The first
+  // element that is media, or has a background image, is what the user sees.
+  function resolve(stack) {
+    let hit = null;
 
-      let hit = null;
-      if (tag === 'img') hit = fromImg(el);
-      else if (tag === 'video') hit = fromVideo(el);
-      else if (tag === 'audio') { const u = abs(el.currentSrc || el.getAttribute('src'), el); if (u) hit = { url: u, kind: 'audio', el }; }
-      else if (tag === 'canvas') { const r = fromCanvas(el); if (r && r.error) softError = r.error; else hit = r; }
-      else if (tag === 'svg') hit = fromSvg(el);
-      else if (tag === 'image' && el.ownerSVGElement) {
-        const u = abs(el.getAttribute('href') || el.getAttribute('xlink:href'), el);
-        if (u) hit = { url: u, kind: 'image', el };
-      }
-      if (!hit) hit = fromBackground(el);
-
-      if (hit && hit.url) {
-        // A thumbnail wrapped in a link to the real file: take the file.
-        if (cfg.preferLink && linkHref && linkHref !== hit.url) {
-          if (hit.kind === 'image' && IMAGE_EXT.test(linkHref)) return Object.assign({}, hit, { url: upgrade(linkHref), viaLink: true });
-          if (hit.kind === 'video' && VIDEO_EXT.test(linkHref)) return Object.assign({}, hit, { url: upgrade(linkHref), viaLink: true });
-        }
-        return hit;
+    for (const el of stack) {
+      hit = mediaFrom(el);
+      if (hit) break;
+      const bg = fromBackground(el);
+      if (bg) {
+        // Media inside this element paints over its background, even if
+        // pointer-events:none kept that media out of the hit-test stack.
+        const inner = mediaAround(el, cursor.x, cursor.y);
+        hit = (inner && mediaFrom(inner)) || bg;
+        break;
       }
     }
+    if (!hit) {
+      const loose = mediaAround(document, cursor.x, cursor.y);
+      if (loose) hit = mediaFrom(loose);
+    }
 
-    if (linkHref) return { url: upgrade(linkHref), kind: VIDEO_EXT.test(linkHref) ? 'video' : 'image', el: null, viaLink: true };
-    if (softError) return { error: softError };
+    // A thumbnail wrapped in a link to the real file: take the file, and keep
+    // the thumbnail as the fallback.
+    const link = cfg.preferLink ? (linkFor(hit && hit.el) || linkFor(stack[0])) : '';
+    if (hit) {
+      const fits = link && link !== hit.url &&
+        ((hit.kind === 'image' && IMAGE_EXT.test(link)) || (hit.kind === 'video' && VIDEO_EXT.test(link)));
+      if (!fits) return hit;
+      const up = upgrade(link);
+      return Object.assign({}, hit, {
+        url: up, make: null, viaLink: true,
+        alts: fallbacks([link, hit.url].concat(hit.alts || []), up)
+      });
+    }
+    if (link) {
+      const up = upgrade(link);
+      return { url: up, alts: fallbacks([link], up), kind: VIDEO_EXT.test(link) ? 'video' : 'image', el: stack[0] || null, viaLink: true };
+    }
     return null;
   }
 
@@ -311,9 +432,9 @@
     'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/wav': 'wav'
   };
 
-  function tokensFor(hit) {
+  function tokensFor(hit, url) {
     let name = '', ext = '';
-    const u = hit.url;
+    const u = url || hit.url;
     if (/^data:/i.test(u)) {
       const m = /^data:([^;,]+)/i.exec(u);
       ext = (m && MIME_EXT[m[1].toLowerCase()]) || 'png';
@@ -339,9 +460,12 @@
     }
     ext = (ext || '').split(/[?#]/)[0].toLowerCase();
     if (!/^[a-z0-9]{1,5}$/.test(ext)) ext = '';
+    // Nothing in the address says what this is. The service worker corrects
+    // the guess once the server has answered with a real content type.
+    const extGuessed = !ext;
     if (!ext) ext = hit.kind === 'video' ? 'mp4' : hit.kind === 'audio' ? 'mp3' : 'jpg';
     return {
-      name, ext, kind: hit.kind,
+      name, ext, extGuessed, kind: hit.kind,
       host: location.hostname.replace(/^www\./, ''),
       title: document.title || '',
       alt: hit.alt || ''
@@ -386,8 +510,8 @@
 
   function paintOutline() {
     ui();
-    const hit = resolve(elementStack(hoverTarget));
-    const r = hit && !hit.error ? boxFor(hit.el) : null;
+    const hit = pointerInside ? resolve(elementStack()) : null;
+    const r = hit ? boxFor(hit.el) : null;
     if (!r) { outlineBox.classList.remove('on'); return; }
     outlineBox.classList.remove('hit');
     outlineBox.classList.add('on');
@@ -407,6 +531,12 @@
   }
 
   function toast(msg, kind) {
+    if (!cfg.toast) return;
+    if (window.top !== window) { ask({ type: 'relayTop', action: 'toast', text: msg, kind }); return; }
+    showToast(msg, kind);
+  }
+
+  function showToast(msg, kind) {
     if (!cfg.toast) return;
     ui();
     toastBox.textContent = msg;
@@ -434,6 +564,12 @@
     try { const r = await fetch(url); return r.ok || r.type === 'opaque'; } catch (_) { return false; }
   }
 
+  // Text is never the picture or video someone pointed at. SVG is the one
+  // image type that calls itself XML.
+  const notMedia = (type) => !/svg/i.test(type || '') && /^text\/|html|json|xml|javascript/i.test(type || '');
+
+  const sizeText = (bytes) => (bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB');
+
   function pageDownload(href, filename, revoke) {
     return new Promise((res) => {
       const a = document.createElement('a');
@@ -446,21 +582,52 @@
     });
   }
 
-  /* Fetch inside the page (correct Referer + cookies), then save via an anchor. */
-  async function fallback(url, filename) {
+  function blobToDataUrl(blob) {
+    return new Promise((res, rej) => {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = () => rej(fr.error);
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  // Above this a file is too big to hand to the service worker in one message.
+  const MAX_INLINE = 24 * 1024 * 1024;
+
+  // Save bytes that exist only in this page. Passing them to the service worker
+  // lets the download honour the folder setting. An anchor click cannot carry a
+  // folder, so it is the last resort, and the caller is told when it was used.
+  async function saveBlob(blob, path) {
+    if (blob.size <= MAX_INLINE) {
+      const res = await ask({ type: 'saveData', dataUrl: await blobToDataUrl(blob), filename: path });
+      if (res && res.ok) return { name: res.filename, filed: true };
+    }
+    const name = String(path).split('/').pop();
+    await pageDownload(URL.createObjectURL(blob), name, true);
+    return { name, filed: false };
+  }
+
+  const savedText = (saved) => saved.name + (saved.filed ? '' : ' (in Downloads, outside your Snaffle folder)');
+
+  // The browser could not fetch it alone. The page can try with its own
+  // cookies and Referer, and the service worker after that.
+  async function fallback(url, path) {
+    let reason = '';
     try {
       const r = await fetch(url, { credentials: 'include', referrer: location.href });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) throw new Error('the site answered ' + r.status);
       const blob = await r.blob();
-      if (!blob.size) throw new Error('empty response');
-      await pageDownload(URL.createObjectURL(blob), filename, true);
-      toast('Saved ' + filename, 'ok');
-      return true;
-    } catch (_) {
-      const res = await ask({ type: 'proxyGrab', url, filename });
-      if (res && res.ok) { toast('Saved ' + res.filename, 'ok'); return true; }
-      return false;
+      if (!blob.size) throw new Error('the site sent an empty file');
+      if (notMedia(blob.type)) throw new Error('the site sent a web page instead of a file');
+      return { ok: true, saved: await saveBlob(blob, path) };
+    } catch (e) {
+      reason = (e && e.message) || String(e);
     }
+    const res = await ask({ type: 'proxyGrab', url, filename: path });
+    if (res && res.ok) return { ok: true, saved: { name: res.filename, filed: true } };
+    // "Failed to fetch" is the browser's word for a cross-origin refusal; the
+    // service worker's answer says more about what the site actually did.
+    return { ok: false, reason: (res && res.error && !/Failed to fetch/i.test(res.error) ? res.error : '') || reason };
   }
 
   /* ------------------------------------------------- streamed video (HLS) */
@@ -489,7 +656,11 @@
     throw new Error('could not read ' + url.split('/').pop());
   }
 
+  // The sniffer records every playlist requested from this tab, and cannot
+  // tell the page's requests from ours. Announce ours first so they are not
+  // recorded as if the page had asked for another video.
   async function fetchText(url) {
+    await ask({ type: 'ownFetch', urls: [url] });
     return new TextDecoder().decode(await fetchBuf(url));
   }
 
@@ -605,15 +776,24 @@
     const found = await ask({ type: 'findStream', mediaId });
     if (!found || !found.url) return false;
 
+    // Several streams on the page and nothing tying one of them to this video:
+    // the most recent is only a guess, and the user has to be told so.
+    const guess = found.guessed && found.streams > 1
+      ? ' - best guess: this page loaded ' + found.streams + ' streams and none could be matched to this video'
+      : '';
+
     const who = statusInfo(videoEl);
     const stem = who ? who.user + '-' + who.id : (mediaId ? 'video-' + mediaId : 'video');
 
     // A progressive file was served after all: normal download path.
     if (/\.mp4(\?|$)/i.test(found.url)) {
       const tok = { name: stem, ext: 'mp4', kind: 'video', host: hostToken(), title: document.title || '', alt: '' };
-      const res = await ask({ type: 'grab', url: found.url, tokens: tok, pageUrl: location.href });
-      if (res && res.ok) { toast('Saved ' + res.filename, 'ok'); return true; }
-      return await fallback(found.url, stem + '.mp4') || true;
+      const res = await ask({ type: 'grab', candidates: [{ url: found.url, tokens: tok }], pageUrl: location.href });
+      if (res && res.ok) { toast('Saved ' + res.filename + guess, guess ? 'warn' : 'ok'); return true; }
+      const fb = await fallback(found.url, (res && res.filename) || stem + '.mp4');
+      if (fb.ok) toast('Saved ' + savedText(fb.saved) + guess, guess ? 'warn' : 'ok');
+      else toast('Could not save this video: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err');
+      return true;
     }
 
     cancelStream = false;
@@ -670,10 +850,10 @@
         kind: 'video', host: hostToken(), title: document.title || '', alt: ''
       };
       const named = await ask({ type: 'buildName', tokens: tok });
-      const filename = (named && named.filename) || tok.name + '.' + tok.ext;
-      await pageDownload(URL.createObjectURL(blob), filename, true);
-      toast('Saved ' + filename + ' (' + Math.max(1, Math.round(blob.size / 1048576)) + ' MB)' +
-            (videoOnly ? ' - video only, this stream keeps audio in a separate track' : ''), 'ok');
+      const saved = await saveBlob(blob, (named && named.path) || tok.name + '.' + tok.ext);
+      toast('Saved ' + savedText(saved) + ' (' + sizeText(blob.size) + ')' +
+            (videoOnly ? ' - video only, this stream keeps audio in a separate track' : '') + guess,
+            guess ? 'warn' : 'ok');
       return true;
     } catch (e) {
       toast('Stream download failed: ' + ((e && e.message) || e), 'err');
@@ -686,23 +866,28 @@
 
   // The guard is claimed before the first await, so a double tap cannot start
   // two assemblies of the same video.
-  async function grab(startNode) {
+  async function grab() {
     if (!cfg.enabled || busy) return;
     busy = true;
     try {
-      await runGrab(startNode);
+      await runGrab();
     } catch (e) {
-      toast('Download failed: ' + ((e && e.message) || e), 'err');
+      toast('Could not save this: ' + ((e && e.message) || e), 'err');
     } finally {
       busy = false;
     }
   }
 
-  async function runGrab(startNode) {
-    let hit = resolve(elementStack(startNode));
-
+  async function runGrab() {
+    let hit = resolve(elementStack());
     if (!hit) { toast('No image or video under the cursor', 'warn'); return; }
-    if (hit.error) { toast(hit.error, 'err'); return; }
+
+    // Canvas and SVG are only encoded now that a grab is really happening.
+    if (hit.make) {
+      const made = hit.make();
+      if (made.error) { toast(made.error, 'err'); return; }
+      hit = Object.assign({}, hit, { url: made.url, make: null });
+    }
 
     // Streamed (MSE) video: its blob URL is not fetchable, so rebuild it from
     // the HLS playlist the player used. Poster frame is the last resort.
@@ -720,27 +905,43 @@
     }
 
     flash(hit.el);
-    const tok = tokensFor(hit);
     const prefix = hit.posterFallbackUsed ? 'Streamed video - saved poster: ' : 'Saved ';
 
+    // Bytes that exist only in this page: an encoded canvas, an inline SVG, an
+    // image the page built in memory.
     if (/^(data|blob):/i.test(hit.url)) {
-      const r = await ask({ type: 'buildName', tokens: tok });
-      const name = (r && r.filename) || tok.name + '.' + tok.ext;
-      await pageDownload(hit.url, name, false);
-      toast(prefix + name, 'ok');
+      const tok = tokensFor(hit);
+      const named = await ask({ type: 'buildName', tokens: tok });
+      const path = (named && named.path) || tok.name + '.' + tok.ext;
+      let saved = null;
+      if (/^data:/i.test(hit.url)) {
+        const res = await ask({ type: 'saveData', dataUrl: hit.url, filename: path });
+        if (res && res.ok) saved = { name: res.filename, filed: true };
+      } else {
+        saved = await saveBlob(await (await fetch(hit.url)).blob(), path);
+      }
+      if (!saved) {
+        const name = path.split('/').pop();
+        await pageDownload(hit.url, name, false);
+        saved = { name, filed: false };
+      }
+      toast(prefix + savedText(saved), 'ok');
       return;
     }
 
-    const res = await ask({ type: 'grab', url: hit.url, tokens: tok, pageUrl: location.href });
-    if (res && res.ok) {
-      toast(prefix + res.filename, 'ok');
-    } else {
-      toast('Retrying from the page...', 'warn');
-      const name = (res && res.filename) || tok.name + '.' + tok.ext;
-      if (!await fallback(hit.url, name)) {
-        toast('Could not download: ' + ((res && res.error) || 'blocked by the site'), 'err');
-      }
-    }
+    // Try the best address first, then each fallback, ending with the one the
+    // page itself loaded. The service worker answers only once the server has,
+    // so "Saved" means a real file of the right kind is arriving.
+    const candidates = [hit.url].concat(hit.alts || []).map((u) => ({ url: u, tokens: tokensFor(hit, u) }));
+    const slow = setTimeout(() => toast('Saving...', 'warn'), 600);
+    const res = await ask({ type: 'grab', candidates, pageUrl: location.href });
+    clearTimeout(slow);
+    if (res && res.ok) { toast(prefix + res.filename, 'ok'); return; }
+
+    const last = candidates[candidates.length - 1];
+    const fb = await fallback(last.url, (res && res.filename) || last.tokens.name + '.' + last.tokens.ext);
+    if (fb.ok) toast(prefix + savedText(fb.saved), 'ok');
+    else toast('Could not save this: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err');
   }
 
   /* ----------------------------------------------- shared with sibling files */
@@ -750,7 +951,7 @@
   // download plumbing rather than duplicating it.
   const api = {
     get cfg() { return cfg; },
-    ui, toast, flash, ask, pageDownload, fallback, fetchBuf,
+    ui, toast, flash, ask, pageDownload, saveBlob, savedText, fallback, fetchBuf,
     resolve, elementStack, ancestors, tokensFor, statusInfo, hostToken,
     fromImg, fromVideo, fromBackground,
     abs, upgrade, parseSrcset, grab,
@@ -776,6 +977,16 @@
     return hitKey && modsMatch(k, e);
   };
 
+  // A key press lands in whichever frame has keyboard focus, which need not be
+  // the frame the pointer is in. If the pointer is not here, hand the grab to
+  // the frame that has it rather than acting on a stale position.
+  function keyGrab() {
+    if (pointerInside && !overFrame()) { grab(); return; }
+    ask({ type: 'relayGrab' }).then((r) => {
+      if (!r || !r.handled) toast('No image or video under the cursor', 'warn');
+    });
+  }
+
   // Each binding is checked against the same event, most specific first - a
   // three-modifier combo must win over a two-modifier one that shares its key.
   // Capture and the gallery live in the top frame. A key pressed inside an
@@ -783,7 +994,7 @@
   const KEY_ACTIONS = [
     ['captureKey', () => (api.capture ? api.capture() : ask({ type: 'relayTop', action: 'captureNow' }))],
     ['galleryKey', () => (api.gallery ? api.gallery() : ask({ type: 'relayTop', action: 'galleryNow' }))],
-    ['key', () => grab()]
+    ['key', keyGrab]
   ];
 
   window.addEventListener('keydown', (e) => {
@@ -801,8 +1012,11 @@
 
   // Browser gestures on links - middle click opens a tab, Ctrl+Alt+click opens
   // Chrome's split view, Alt+click downloads - are default actions of the click
-  // sequence. Cancelling only some of those events still lets the gesture fire,
-  // so once our trigger matches we cancel the whole sequence.
+  // sequence, so once our trigger matches the rest of the sequence is cancelled.
+  //
+  // pointerdown is the exception, and must NOT be cancelled: doing so makes the
+  // browser drop the mousedown and mouseup that follow, and mousedown is where
+  // the grab happens. It is only hidden from the page.
   const SEQUENCE = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click',
                     'auxclick', 'contextmenu', 'dblclick', 'dragstart'];
 
@@ -810,21 +1024,29 @@
     cfg.enabled && cfg.mouse.enabled && !isTyping(e) &&
     e.button === cfg.mouse.button && modsMatch(cfg.mouse, e);
 
-  const kill = (e) => {
-    e.preventDefault();
+  const hide = (e) => {
     e.stopPropagation();
     if (e.stopImmediatePropagation) e.stopImmediatePropagation();
   };
+  const kill = (e) => { e.preventDefault(); hide(e); };
 
   for (const type of SEQUENCE) {
-    const opens = (type === 'pointerdown' || type === 'mousedown');
     window.addEventListener(type, (e) => {
-      if (opens) {
+      if (type === 'pointerdown') {
+        if (!triggerMatches(e)) return;
+        hide(e);
+        suppressUntil = Date.now() + 1200;
+        return;
+      }
+      if (type === 'mousedown') {
         if (!triggerMatches(e)) return;
         kill(e);
         suppressUntil = Date.now() + 1200;
-        // pointerdown lands first and only arms the suppression; mousedown grabs.
-        if (type === 'mousedown') grab(e.target);
+        // The click itself says where the pointer is; no hover is needed first.
+        cursor.x = e.clientX; cursor.y = e.clientY;
+        pointerInside = true;
+        hoverTarget = deepTarget(e);
+        grab();
         return;
       }
       if (Date.now() < suppressUntil) kill(e);
@@ -835,10 +1057,23 @@
 
   chrome.runtime.onMessage.addListener((msg, _s, send) => {
     if (!msg) return false;
-    if (msg.type === 'grabNow') { grab(); send({ ok: true }); }
-    else if (msg.type === 'downloadFailed') { fallback(msg.url, msg.filename); send({ ok: true }); }
-    else if (msg.type === 'toast') { toast(msg.text, msg.kind); send({ ok: true }); }
-    else if (msg.type === 'captureNow') { if (api.capture) api.capture(); send({ ok: true }); }
+    if (msg.type === 'grabNow') {
+      // Broadcast to every frame. Only the one the pointer is in answers, so
+      // the sender can tell whether anybody took it.
+      if (!pointerInside || overFrame()) return false;
+      grab();
+      send({ handled: true });
+    } else if (msg.type === 'downloadFailed') {
+      // A download that started and then died. Never leave "Saved" standing.
+      fallback(msg.url, msg.filename).then((fb) => {
+        if (fb.ok) toast('Saved ' + savedText(fb.saved), 'ok');
+        else toast('Could not save ' + String(msg.filename).split('/').pop() + ': ' + (fb.reason || msg.error || 'the site blocked it'), 'err');
+      });
+      send({ ok: true });
+    } else if (msg.type === 'toast') {
+      if (window.top === window) showToast(msg.text, msg.kind);
+      send({ ok: true });
+    } else if (msg.type === 'captureNow') { if (api.capture) api.capture(); send({ ok: true }); }
     else if (msg.type === 'galleryNow') { if (api.gallery) api.gallery(); send({ ok: true }); }
     return false;
   });

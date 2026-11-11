@@ -108,7 +108,7 @@ async function launch(opts) {
         const t = await h.toast(page);
         const text = t ? t.text : '';
         if (text && text === last) {
-          if (!/^(Retrying|Reading|Downloading|Scanning)/.test(text) && Date.now() - stableSince > 700) return text;
+          if (!/^(Saving|Retrying|Reading|Downloading|Scanning)/.test(text) && Date.now() - stableSince > 700) return text;
         } else { last = text; stableSince = Date.now(); }
         await sleep(100);
       }

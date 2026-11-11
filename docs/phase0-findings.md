@@ -8,7 +8,51 @@ npm run test:browser          # all areas, about 3 minutes
 node test/browser/run.js grab # one area: grab | stream | shot | list | ui | life
 ```
 
-**Result: 47 checks, 19 pass, 28 fail.** A failing check is a defect in the extension, not a broken test. They are expected to stay red until the defect behind each is fixed.
+**Result at the time: 47 checks, 19 pass, 28 fail.** A failing check is a defect in the extension, not a broken test.
+
+## Status after Phase 1 (v1.1.0)
+
+**49 checks: 38 pass, 11 known defects, 1 not observable under automation.**
+
+Fixed, each with a check that now passes:
+
+| Defect | Checks |
+| --- | --- |
+| Mouse trigger did nothing | G17, G20 |
+| Images in a shadow root not found | G16 |
+| Link-following never fired | G05 |
+| Keyboard trigger over an iframe saved a different image | G18, G19 |
+| Pointer outside the page saved a stale target | G27 |
+| Encoded tracking URL hijacked the download | G06 |
+| Background texture beat the photo | G04 |
+| `data-` attribute holding an id trusted as a source | G07 |
+| Web page saved as an image and reported as saved | G13 |
+| "Saved" left standing after total failure | G15 |
+| Canvas, SVG, recovered files, rebuilt video and screenshots ignored the folder | G09, G10, G14, S06, C01 |
+| Sniffer recorded the extension's own playlist fetches | S03 |
+| File size misreported | S06 |
+
+Changed but not solved: with no media id and several streams on a page, Snaffle still takes the most recent stream, which can be the wrong video. It now says so in the toast (S02). Matching a stream to its video element on sites other than X is still open.
+
+Still open, by phase:
+
+| Check | Defect | Phase |
+| --- | --- | --- |
+| S04 | Split-audio streams save without sound | 2 |
+| P05 | Defaults written to storage at install | 2 |
+| X02 | Service worker fetches any URL it is asked for | 2 |
+| L06 | Media list has no keyboard access | 3 |
+| P02 | Recorded shortcut not saved until Save is pressed | 3 |
+| C02 | Capture trusts `devicePixelRatio` instead of measuring the shot | 4 |
+| C03 | Fixed elements hidden before the first shot | 4 |
+| C04 | Inner scrolling containers not detected | 4 |
+| C05 | No check that the tab is still in front | 4 |
+| L02 | Thumbnails load full-size originals | 4 |
+| L05 | Size filter not re-applied when dimensions arrive | 4 |
+
+G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an extension's filename hook when downloads are driven through the automation protocol. The renaming logic is unit-tested; the end-to-end behaviour needs a manual check.
+
+The rest of this document is the original Phase 0 record.
 
 ## Defects, ranked for Phase 1
 

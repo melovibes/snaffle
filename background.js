@@ -72,9 +72,9 @@ async function nextIndex() {
   return n;
 }
 
-async function buildFilename(rawTok, cfg) {
+async function buildFilename(rawTok, cfg, index) {
   const c = cfg || await getCfg();
-  const idx = await nextIndex();
+  const idx = index || await nextIndex();
   // An empty {name} would collapse the template to a bare extension.
   const tok = Object.assign({}, rawTok);
   if (!tok.name) tok.name = tok.host || 'media';
@@ -92,6 +92,8 @@ async function buildFilename(rawTok, cfg) {
 
 /* ------------------------------------------------------------- downloads */
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 const pending = new Map(); // downloadId -> { tabId, frameId, url, filename }
 
 function startDownload(opts) {
@@ -103,44 +105,161 @@ function startDownload(opts) {
   });
 }
 
-// A download can start fine and then fail server-side (403 on hotlinks).
-// When that happens, ask the tab to re-fetch it with the page's own credentials.
-chrome.downloads.onChanged.addListener((delta) => {
-  const info = pending.get(delta.id);
-  if (!info) return;
-  if (delta.state && delta.state.current === 'complete') { pending.delete(delta.id); return; }
-  if (delta.state && delta.state.current === 'interrupted') {
-    pending.delete(delta.id);
-    const err = (delta.error && delta.error.current) || 'INTERRUPTED';
-    if (err === 'USER_CANCELED') return;
-    if (info.tabId != null) {
-      const msg = { type: 'downloadFailed', url: info.url, filename: info.filename };
-      const done = () => void chrome.runtime.lastError;
-      if (info.frameId != null) chrome.tabs.sendMessage(info.tabId, msg, { frameId: info.frameId }, done);
-      else chrome.tabs.sendMessage(info.tabId, msg, done);
-    }
-  }
+const findDownload = (id) => new Promise((res) => chrome.downloads.search({ id }, (items) => res(items && items[0])));
+
+// Take a rejected download back out of the browser: stop it, delete whatever
+// reached the disk, and drop it from the downloads list.
+async function discard(id) {
+  const quiet = (fn) => new Promise((res) => {
+    try { fn(() => { void chrome.runtime.lastError; res(); }); } catch (_) { res(); }
+  });
+  await quiet((cb) => chrome.downloads.cancel(id, cb));
+  await quiet((cb) => chrome.downloads.removeFile(id, cb));
+  await quiet((cb) => chrome.downloads.erase({ id }, cb));
+}
+
+const MIME_EXT = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/avif': 'avif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/x-icon': 'ico',
+  'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
+  'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/ogg': 'ogg'
+};
+const cleanMime = (m) => String(m || '').toLowerCase().split(';')[0].trim();
+
+// Text is never the picture or video someone pointed at. SVG is the one image
+// type that calls itself XML.
+function notMedia(mime) {
+  const m = cleanMime(mime);
+  if (!m || /svg/.test(m)) return false;
+  return /^text\/|html|json|xml|javascript/.test(m);
+}
+
+const WHY = {
+  SERVER_FORBIDDEN: 'the site refused the download',
+  SERVER_UNAUTHORIZED: 'the site wants a sign-in',
+  SERVER_BAD_CONTENT: 'the file is not there (404)',
+  SERVER_FAILED: 'the site had an error',
+  NETWORK_FAILED: 'the connection failed',
+  NETWORK_TIMEOUT: 'the connection timed out',
+  FILE_ACCESS_DENIED: 'the folder could not be written to',
+  FILE_NAME_TOO_LONG: 'the file name is too long'
+};
+
+// The name a download was asked for, keyed by address, so the file can be
+// renamed once the server has said what it really is.
+const wanted = new Map();
+
+// The extension a file should carry, given what the server says it is. A .jpg
+// address that serves WebP is common, and the file should say what it holds.
+function nameForMime(filename, mime) {
+  const real = MIME_EXT[cleanMime(mime)];
+  if (!real) return filename;
+  const had = (/\.([a-z0-9]{1,5})$/i.exec(filename) || [])[1] || '';
+  const same = had.toLowerCase() === real || (/^jpe?g$/i.test(had) && real === 'jpg');
+  if (same) return filename;
+  return had ? filename.slice(0, -had.length) + real : filename + '.' + real;
+}
+
+// Runs for every download in the browser once its headers are in. Ours are
+// the only ones touched; anything else is left to Chrome and other extensions.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  const w = item.byExtensionId === chrome.runtime.id ? wanted.get(item.url) : null;
+  if (!w) return;
+  w.finalName = nameForMime(w.filename, item.mime);
+  suggest({ filename: w.finalName, conflictAction: 'uniquify' });
 });
 
+// Wait until a download has shown what it is. Resolves as soon as the outcome
+// is certain: failed, the wrong kind of content, finished, or bytes of the
+// right kind arriving.
+async function verdict(id, waitForDialog) {
+  const deadline = Date.now() + (waitForDialog ? 120000 : 20000);
+  while (Date.now() < deadline) {
+    const item = await findDownload(id);
+    if (!item) return { ok: false, error: 'the download disappeared' };
+    if (item.state === 'interrupted') {
+      if (item.error === 'USER_CANCELED') return { ok: false, cancelled: true, error: 'cancelled' };
+      return { ok: false, error: WHY[item.error] || String(item.error || 'the download was interrupted').toLowerCase() };
+    }
+    if (item.mime && notMedia(item.mime)) {
+      return { ok: false, error: 'the site sent a web page instead of a file' };
+    }
+    if (item.state === 'complete') return { ok: true, mime: item.mime };
+    if (item.bytesReceived > 0 && item.mime) return { ok: true, running: true, mime: item.mime };
+    await sleep(120);
+  }
+  return { ok: true, running: true };
+}
+
+async function tryDownload(url, filename, cfg, sender) {
+  wanted.set(url, { filename });
+  try {
+    const res = await startDownload({ url, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
+    if (!res.ok) return { ok: false, error: res.error, filename };
+    const v = await verdict(res.id, !!cfg.saveAs);
+    const finalName = (wanted.get(url) || {}).finalName || filename;
+    if (!v.ok) {
+      if (!v.cancelled) await discard(res.id);
+      return { ok: false, error: v.error, cancelled: !!v.cancelled, filename: finalName };
+    }
+    // Still arriving: keep watching, so a late failure is reported too.
+    if (v.running) {
+      pending.set(res.id, { tabId: sender.tab ? sender.tab.id : null, frameId: sender.frameId, url, filename: finalName });
+    }
+    return { ok: true, id: res.id, filename: finalName };
+  } finally {
+    wanted.delete(url);
+  }
+}
+
+// A download that passed its first check can still die part-way. Tell the tab,
+// which retries with the page's own credentials and reports the real outcome.
+chrome.downloads.onChanged.addListener((delta) => {
+  const info = pending.get(delta.id);
+  if (!info || !delta.state) return;
+  if (delta.state.current === 'complete') { pending.delete(delta.id); return; }
+  if (delta.state.current !== 'interrupted') return;
+  pending.delete(delta.id);
+  const err = (delta.error && delta.error.current) || '';
+  if (err === 'USER_CANCELED' || info.tabId == null) return;
+  const msg = { type: 'downloadFailed', url: info.url, filename: info.filename, error: WHY[err] || '' };
+  const done = () => void chrome.runtime.lastError;
+  if (info.frameId != null) chrome.tabs.sendMessage(info.tabId, msg, { frameId: info.frameId }, done);
+  else chrome.tabs.sendMessage(info.tabId, msg, done);
+});
+
+// Candidates arrive best first, ending with the address the page itself
+// loaded. The first one that turns out to be a real file wins.
 async function handleGrab(msg, sender) {
   const cfg = await getCfg();
-  const filename = await buildFilename(msg.tokens, cfg);
-  const res = await startDownload({
-    url: msg.url,
-    filename,
-    conflictAction: 'uniquify',
-    saveAs: !!cfg.saveAs
-  });
-  if (res.ok) {
-    pending.set(res.id, {
-      tabId: sender.tab ? sender.tab.id : null,
-      frameId: sender.frameId,
-      url: msg.url,
-      filename
-    });
-    return { ok: true, id: res.id, filename };
+  const candidates = msg.candidates || [{ url: msg.url, tokens: msg.tokens }];
+  const idx = await nextIndex();
+  let last = { ok: false, error: 'there was nothing to download' };
+  for (const c of candidates) {
+    const filename = await buildFilename(c.tokens, cfg, idx);
+    last = await tryDownload(c.url, filename, cfg, sender);
+    if (last.ok || last.cancelled) return last;
   }
-  return { ok: false, error: res.error, filename };
+  return last;
+}
+
+// Bytes a page handed over as a data URL: an encoded canvas, an inline SVG, a
+// file the page fetched itself. Saved here so the folder setting applies.
+async function saveData(msg) {
+  const cfg = await getCfg();
+  const filename = msg.filename
+    ? String(msg.filename).split('/').map(sanitizeSegment).filter(Boolean).join('/')
+    : await buildFilename(msg.tokens, cfg);
+  const res = await startDownload({ url: msg.dataUrl, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
+  if (!res.ok) return { ok: false, error: res.error };
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const item = await findDownload(res.id);
+    if (!item || item.state === 'interrupted') return { ok: false, error: 'the browser would not save it' };
+    if (item.state === 'complete') return { ok: true, filename };
+    await sleep(100);
+  }
+  return { ok: true, filename };
 }
 
 /* Last resort: fetch from the worker (no CORS limits) and save as a data URL. */
@@ -157,11 +276,12 @@ function toBase64(buf) {
 async function handleProxyGrab(msg) {
   try {
     const r = await fetch(msg.url, { credentials: 'omit' });
-    if (!r.ok) return { ok: false, error: 'HTTP ' + r.status };
+    if (!r.ok) return { ok: false, error: r.status === 403 ? 'the site refused the download' : 'the site answered ' + r.status };
     const buf = await r.arrayBuffer();
-    if (!buf.byteLength) return { ok: false, error: 'empty response' };
-    if (buf.byteLength > MAX_PROXY_BYTES) return { ok: false, error: 'file too large for fallback' };
+    if (!buf.byteLength) return { ok: false, error: 'the site sent an empty file' };
+    if (buf.byteLength > MAX_PROXY_BYTES) return { ok: false, error: 'the file is too large for the fallback path' };
     const type = r.headers.get('content-type') || 'application/octet-stream';
+    if (notMedia(type)) return { ok: false, error: 'the site sent a web page instead of a file' };
     const dataUrl = `data:${type.split(';')[0]};base64,` + toBase64(buf);
     const filename = String(msg.filename || 'download').split('/').map(sanitizeSegment).filter(Boolean).join('/');
     const res = await startDownload({ url: dataUrl, filename, conflictAction: 'uniquify' });
@@ -208,11 +328,41 @@ async function recordStream(d) {
   await chrome.storage.session.set({ [STREAMS_KEY]: s });
 }
 
+// Playlists the extension is about to fetch for itself, so the sniffer does
+// not record them as if the page had asked for another video.
+const ownFetches = new Map(); // url -> expiry
+
+function isOwnFetch(url) {
+  const until = ownFetches.get(url);
+  if (!until) return false;
+  if (until < Date.now()) { ownFetches.delete(url); return false; }
+  return true;
+}
+
 chrome.webRequest.onBeforeRequest.addListener((d) => {
   // Playlists and whole files only - never the thousands of segment requests.
   if (!/\.(m3u8|mp4)(\?|$)/i.test(d.url)) return;
+  // Requests with no tab are the service worker's own; announced ones are ours too.
+  if (d.tabId < 0 || isOwnFetch(d.url)) return;
   recordStream(d).catch(() => {});
 }, { urls: ['*://*/*.m3u8*', '*://video.twimg.com/*'] });
+
+// A player asks for a master playlist and then its variants, so several
+// recorded playlists can be one video. Two belong together when one sits in
+// the other's directory tree. Each group is represented by its shallowest
+// playlist, which is the master.
+function streamGroups(entries) {
+  const dir = (u) => { try { const p = new URL(u); return p.origin + p.pathname.replace(/[^/]*$/, ''); } catch (_) { return u; } };
+  const groups = [];
+  for (const e of entries) {
+    const d = dir(e.url);
+    const g = groups.find((x) => d.startsWith(x.dir) || x.dir.startsWith(d));
+    if (!g) { groups.push({ dir: d, url: e.url, ts: e.ts }); continue; }
+    if (d.length < g.dir.length) { g.dir = d; g.url = e.url; }
+    g.ts = Math.max(g.ts, e.ts);
+  }
+  return groups.sort((x, y) => x.ts - y.ts);
+}
 
 async function findStream(msg, sender) {
   const s = await loadStreams();
@@ -226,9 +376,11 @@ async function findStream(msg, sender) {
     const best = hits.find((e) => e.playlist) || hits[hits.length - 1];
     return best ? { url: best.url } : { url: '' };
   }
-  // No id to match on: the most recent playlist this tab asked for.
-  const recent = inTab.filter((e) => e.playlist).pop();
-  return recent ? { url: recent.url, guessed: true } : { url: '' };
+  // No id to match on: the most recent stream this tab asked for. With more
+  // than one stream on the page that is a guess, and the caller says so.
+  const groups = streamGroups(inTab.filter((e) => e.playlist));
+  const recent = groups[groups.length - 1];
+  return recent ? { url: recent.url, guessed: true, streams: groups.length } : { url: '' };
 }
 
 async function proxyFetch(msg) {
@@ -242,8 +394,6 @@ async function proxyFetch(msg) {
 }
 
 /* ------------------------------------------------- screenshots and bulk ops */
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // captureVisibleTab is quota-limited to a couple of calls per second, and the
 // quota error is retryable - a stitched capture of a long page will hit it.
@@ -321,6 +471,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'grab') { handleGrab(msg, sender).then(sendResponse); return true; }
   if (msg.type === 'proxyGrab') { handleProxyGrab(msg).then(sendResponse); return true; }
   if (msg.type === 'findStream') { findStream(msg, sender).then(sendResponse); return true; }
+  if (msg.type === 'saveData') { saveData(msg).then(sendResponse); return true; }
+  if (msg.type === 'ownFetch') {
+    for (const u of msg.urls || []) ownFetches.set(u, Date.now() + 30000);
+    sendResponse({ ok: true });
+    return false;
+  }
+  if (msg.type === 'relayGrab') {
+    // Every frame hears this; only the one the pointer is in answers.
+    if (!sender.tab) { sendResponse({ handled: false }); return false; }
+    chrome.tabs.sendMessage(sender.tab.id, { type: 'grabNow' }, (r) => {
+      void chrome.runtime.lastError;
+      sendResponse({ handled: !!(r && r.handled) });
+    });
+    return true;
+  }
   if (msg.type === 'proxyFetch') { proxyFetch(msg).then(sendResponse); return true; }
   if (msg.type === 'captureViewport') { captureViewport(sender).then(sendResponse); return true; }
   if (msg.type === 'collectMedia') { collectMedia(sender).then(sendResponse); return true; }
@@ -338,14 +503,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'relayTop') {
     if (sender.tab) {
-      chrome.tabs.sendMessage(sender.tab.id, { type: msg.action }, { frameId: 0 },
+      chrome.tabs.sendMessage(sender.tab.id, { type: msg.action, text: msg.text, kind: msg.kind }, { frameId: 0 },
         () => void chrome.runtime.lastError);
     }
     sendResponse({ ok: true });
     return false;
   }
   if (msg.type === 'buildName') {
-    buildFilename(msg.tokens).then((f) => sendResponse({ ok: true, filename: f.split('/').pop() }));
+    buildFilename(msg.tokens).then((f) => sendResponse({ ok: true, filename: f.split('/').pop(), path: f }));
     return true;
   }
   if (msg.type === 'getCfg') { getCfg().then((c) => sendResponse(c)); return true; }

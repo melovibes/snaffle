@@ -175,7 +175,7 @@
       }
 
       const named = await api.ask({ type: 'buildName', tokens: tok });
-      const filename = (named && named.filename) || tok.name + '.' + tok.ext;
+      const path = (named && named.path) || tok.name + '.' + tok.ext;
 
       // Restore the view before the download bar shifts things around.
       restoreOverlays();
@@ -183,9 +183,9 @@
       window.scrollTo(prev.x, prev.y);
       if (host) host.style.display = '';
 
-      await api.pageDownload(URL.createObjectURL(blob), filename, true);
+      const saved = await api.saveBlob(blob, path);
       const scaled = scale < dpr ? ', scaled to fit the canvas limit' : '';
-      api.toast('Saved ' + filename + ' (' + canvas.width + ' x ' + canvas.height + scaled + ')', 'ok');
+      api.toast('Saved ' + api.savedText(saved) + ' (' + canvas.width + ' x ' + canvas.height + scaled + ')', 'ok');
     } catch (e) {
       api.ask({ type: 'badge', text: '' });
       if (host) host.style.display = '';

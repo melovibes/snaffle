@@ -75,6 +75,17 @@ eq('squarespace format',
   'https://images.squarespace-cdn.com/content/abc/photo?format=original');
 eq('data url passthrough', upgrade('data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA');
 
+// Rewrites that used to turn an image into something else.
+eq('tracking parameter with an encoded page url is not unwrapped',
+  upgrade('https://cdn.example.com/a.png?ref=https%3A%2F%2Fexample.com%2Farticle.html'),
+  'https://cdn.example.com/a.png?ref=https%3A%2F%2Fexample.com%2Farticle.html');
+eq('url= parameter pointing at a page is not followed',
+  upgrade('https://cdn.example.com/a.png?url=https://example.com/landing'),
+  'https://cdn.example.com/a.png?url=https://example.com/landing');
+eq('reddit external-preview is left alone (signed, no i.redd.it copy)',
+  upgrade('https://external-preview.redd.it/abc.jpg?width=640&s=sig'),
+  'https://external-preview.redd.it/abc.jpg?width=640&s=sig');
+
 /* ------------------------------------------------------------------ srcset */
 
 const { parseSrcset } = lift('content.js', 'function parseSrcset(input)',
@@ -152,6 +163,43 @@ eq('template filled',
 eq('unknown token kept verbatim',
   nameHelpers.applyTemplate('{name}-{bogus}.{ext}', { name: 'pic', ext: 'jpg' }, 1), 'pic-{bogus}.jpg');
 eq('index zero padded', nameHelpers.applyTemplate('{index}', {}, 42), '0042');
+
+/* ------------------------------------------------- download verdict helpers */
+
+const dl = lift('background.js', 'const MIME_EXT = {', '// Runs for every download in the browser',
+  ['nameForMime', 'notMedia']);
+
+eq('extension-less name takes the served type', dl.nameForMime('Snaffle/x/808080.jpg', 'image/webp'), 'Snaffle/x/808080.webp');
+eq('jpg address serving webp is renamed', dl.nameForMime('photo.jpg', 'image/webp; charset=binary'), 'photo.webp');
+eq('jpeg and jpg are the same type', dl.nameForMime('photo.jpeg', 'image/jpeg'), 'photo.jpeg');
+eq('matching type is untouched', dl.nameForMime('a/b/clip.mp4', 'video/mp4'), 'a/b/clip.mp4');
+eq('unknown type is untouched', dl.nameForMime('file.bin', 'application/octet-stream'), 'file.bin');
+eq('name with no extension gains one', dl.nameForMime('folder/key', 'image/png'), 'folder/key.png');
+
+eq('html is not media', dl.notMedia('text/html; charset=utf-8'), true);
+eq('json is not media', dl.notMedia('application/json'), true);
+eq('svg is media despite being xml', dl.notMedia('image/svg+xml'), false);
+eq('octet-stream is given the benefit of the doubt', dl.notMedia('application/octet-stream'), false);
+eq('missing type is given the benefit of the doubt', dl.notMedia(''), false);
+
+const { streamGroups } = lift('background.js', 'function streamGroups(entries)', 'async function findStream(',
+  ['streamGroups']);
+
+// One video is a master playlist plus the variants the player then asks for.
+const oneVideo = streamGroups([
+  { url: 'https://v.example.com/ext_tw_video/9/pu/pl/master.m3u8', ts: 1 },
+  { url: 'https://v.example.com/ext_tw_video/9/pu/pl/avc1/720x1280/v.m3u8', ts: 2 },
+  { url: 'https://v.example.com/ext_tw_video/9/pu/pl/mp4a/128000/a.m3u8', ts: 3 }
+]);
+eq('master and its variants count as one stream', oneVideo.length, 1);
+eq('the group is represented by its master', oneVideo[0].url, 'https://v.example.com/ext_tw_video/9/pu/pl/master.m3u8');
+const twoVideos = streamGroups([
+  { url: 'https://v.example.com/hls/b/master.m3u8', ts: 5 },
+  { url: 'https://v.example.com/hls/c/master.m3u8', ts: 2 },
+  { url: 'https://v.example.com/hls/c/hi.m3u8', ts: 3 }
+]);
+eq('separate directories are separate streams', twoVideos.length, 2);
+eq('groups are ordered by most recent activity', twoVideos[twoVideos.length - 1].url, 'https://v.example.com/hls/b/master.m3u8');
 
 /* ------------------------------------------------------------------- PDF */
 
