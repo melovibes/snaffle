@@ -135,6 +135,16 @@ Defaults: folder `Snaffle/{host}`, name `{name}.{ext}` — so a photo from examp
 
 `capture.js` and `gallery.js` are separate content scripts in the same isolated world. `content.js` publishes a shared object (`window.__SNAFFLE`) holding the UI and download plumbing, and they attach themselves to it, so manifest load order matters. A test enforces both the order and that neither file reaches for a helper the core does not export.
 
+## Icon
+
+`icons/icon512.png` is the master. Regenerate the set with:
+
+```
+pwsh -File tools/make-icons.ps1
+```
+
+32, 48 and 128 are resampled from the master. **16 is different artwork** — the full logo (claw, photo tile, sun, hills) turns to mush at 16 pixels, so the toolbar icon is the claw alone, which is the only part whose silhouette survives. Size-specific artwork is normal practice; Chrome picks the right file per context.
+
 ## Tests
 
 ```
