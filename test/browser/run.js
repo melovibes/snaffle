@@ -576,24 +576,36 @@ const base = (u) => {
       await other.goto(A.origin + '/pages/lime.html');
       await tall.bringToFront();
       await tall.mouse.move(300, 300);
-      let paused = '';
+      // What the tab says, and whether Chrome has it in front, twice a second.
+      const heard = [];
+      const look = async (tag) => {
+        const t = await h.toast(tall);
+        const front = await h.probe.evaluate(async () => {
+          const tabs = await chrome.tabs.query({});
+          const it = tabs.find((x) => /tall\.html/.test(x.url || ''));
+          return it ? it.active : null;
+        });
+        const line = tag + (front ? ' in front' : ' behind') + ': ' + (t ? t.text.split(/[.:]/)[0] : 'nothing');
+        if (heard[heard.length - 1] !== line) heard.push(line);
+      };
       // Leave the other tab in front for a while, as a user checking something would.
       const s = await shoot(h, tall, {
         during: async () => {
           await sleep(900);
+          await look('started,');
           await other.bringToFront();
-          await sleep(5000);
-          const t = await h.toast(tall);
-          paused = t ? t.text : '';
+          for (let i = 0; i < 10; i++) { await sleep(500); await look('away,'); }
           await tall.bringToFront();
         }
       });
       await other.close();
-      if (!s.bytes) return { ok: false, observed: 'no image produced; while away: "' + paused + '"; toast "' + s.toast + '"' };
+      // Paused, and still saying so for as long as the tab is behind.
+      const paused = heard.some((l) => /^away, behind: Paused/.test(l)) && !heard.some((l) => /^away, behind: nothing/.test(l));
+      if (!s.bytes) return { ok: false, observed: 'no image produced; ' + heard.join(' | ') + '; toast "' + s.toast + '"' };
       const png = PNG.sync.read(s.bytes);
       const seen = bandsOf(png, 5, 500);
       const lime = seen.filter((c) => c === '#7fff00').length;
-      return { ok: lime === 0 && seen.join() === BANDS.join() && /Paused/.test(paused), observed: lime + ' of 5 bands show the other tab; band colours ' + seen.join(' ') + '; while away the tab said "' + paused + '"' };
+      return { ok: lime === 0 && seen.join() === BANDS.join() && paused, observed: lime + ' of 5 bands show the other tab; band colours ' + seen.join(' ') + '; ' + heard.join(' | ') };
     });
 
     await check('shot', 'C10', null, 'A capture shows its progress and Escape cancels it, leaving the page as it was', async () => {
@@ -839,7 +851,7 @@ const base = (u) => {
     });
 
     await check('list', 'L06', null, 'Cards can be reached, moved between and selected from the keyboard', async () => {
-      const start = first ? first.focus : 'none';
+      const began = first ? first.focus : 'none';
       await page.keyboard.press('ArrowRight');
       const moved = (await panel()).focus;
       await page.keyboard.press('Space');
@@ -847,8 +859,8 @@ const base = (u) => {
       const picked = after.cards.filter((c) => c.selected).map((c) => base(c.url));
       await page.keyboard.press('Space');
       const cleared = (await panel()).cards.filter((c) => c.selected).length;
-      const ok = /^card:/.test(start) && /^card:/.test(moved) && moved !== start && picked.length === 1 && 'card:' + picked[0] === moved && cleared === 0;
-      return { ok, observed: 'focus opens on ' + start + '; Right arrow moves to ' + moved + '; Space selects [' + picked.join(', ') + ']; Space again leaves ' + cleared + ' selected' };
+      const ok = /^card:/.test(began) && /^card:/.test(moved) && moved !== began && picked.length === 1 && 'card:' + picked[0] === moved && cleared === 0;
+      return { ok, observed: 'focus opens on ' + began + '; Right arrow moves to ' + moved + '; Space selects [' + picked.join(', ') + ']; Space again leaves ' + cleared + ' selected' };
     });
 
     await check('list', 'L08', null, 'Tab stays inside the dialog', async () => {

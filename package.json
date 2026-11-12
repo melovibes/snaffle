@@ -1,14 +1,19 @@
 {
   "name": "snaffle",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "description": "Chrome extension: grab media off any page. This package.json exists for the test tooling only; the extension itself has no build step.",
   "scripts": {
+    "lint": "eslint .",
     "test": "node test/snaffle.test.js",
     "test:browser": "node test/browser/run.js",
-    "package": "node tools/make-zip.js"
+    "package": "node tools/make-zip.js",
+    "shots": "node test/browser/shots.js",
+    "demo": "node test/browser/demo.js"
   },
   "devDependencies": {
+    "eslint": "^9.39.5",
+    "globals": "^17.14.0",
     "playwright": "^1.64.0",
     "pngjs": "^7.0.0"
   },

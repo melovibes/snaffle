@@ -93,6 +93,7 @@ async function show(msg) {
   if (parts.length !== 1) $('copy').title = 'A screenshot in several pieces cannot be copied as one image';
 
   if (info.notes) setStatus(info.notes.trim(), 'warn');
+  else setStatus('', '');
 
   // Come to the front now that there is something to look at.
   chrome.tabs.getCurrent((tab) => { if (tab) chrome.tabs.update(tab.id, { active: true }); });
@@ -220,9 +221,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // the capture script to start sending.
   chrome.runtime.sendMessage({ type: 'resultReady', id }, () => void chrome.runtime.lastError);
 
-  // If nothing has arrived by now, it is not going to.
+  // If nothing at all has arrived by now, it is not going to. A very large
+  // screenshot that is still arriving is left alone.
   setTimeout(() => {
-    if (!parts.length) {
+    if (!parts.length && !incoming.length) {
       $('facts').textContent = 'No screenshot arrived.';
       setStatus('The screenshot never reached this page. Go back to the tab and try again.', 'bad');
     }

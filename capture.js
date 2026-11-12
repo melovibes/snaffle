@@ -20,6 +20,9 @@
   // taller page is saved as several images rather than one huge or shrunken one.
   const PART_PX = 16000;
   const MAX_WIDTH_PX = 16000;
+  // ...and at most this many pixels in all (about 256 MB while it is being
+  // drawn), so a page that is very wide as well as tall gets shorter pieces.
+  const PART_AREA = 64 * 1000 * 1000;
 
   // A page that keeps growing as it is scrolled has to stop somewhere.
   const MAX_ROWS = 100;
@@ -97,7 +100,8 @@
   // is. If it is not, wait for the user to come back instead of guessing.
   async function waitForTab() {
     api.toast('Paused. Come back to this tab to finish the screenshot.', 'warn', { id: TOAST, sticky: true, actions: cancelAction });
-    const end = Date.now() + 3 * 60 * 1000;
+    if (!job.pausedAt) job.pausedAt = Date.now();
+    const end = job.pausedAt + 3 * 60 * 1000;
     for (;;) {
       if (job.cancelled) throw new Cancelled();
       if (Date.now() > end) throw new Error('the tab was left for too long');
@@ -127,7 +131,7 @@
         ours.forEach((el, i) => { el.style.visibility = was[i]; });
       }
 
-      if (res && res.ok) return loadImage(res.dataUrl);
+      if (res && res.ok) { job.pausedAt = 0; return loadImage(res.dataUrl); }
       if (res && res.inactive) { await waitForTab(); continue; }
       throw new Error((res && res.error) || 'the browser refused the capture');
     }
@@ -213,8 +217,9 @@
   // canvas released as soon as nothing more can be drawn on it, so memory in
   // use stays at a part or two however long the page is.
   function makeSurface(widthCss, scale, background, encode) {
-    const partCss = Math.max(1, Math.floor(PART_PX / scale));
     const widthPx = Math.max(1, Math.ceil(widthCss * scale));
+    const partPx = Math.max(2000, Math.min(PART_PX, Math.floor(PART_AREA / widthPx)));
+    const partCss = Math.max(1, Math.floor(partPx / scale));
     const parts = [];   // { canvas, ctx, blob, width, height }
 
     function make(heightPx) {
@@ -237,7 +242,7 @@
     }
 
     function part(k, needCss) {
-      const needPx = Math.min(PART_PX, Math.ceil(needCss * scale));
+      const needPx = Math.min(partPx, Math.ceil(needCss * scale));
       if (!parts[k]) parts[k] = make(needPx);
       else if (!parts[k].blob && parts[k].canvas.height < needPx) resize(parts[k], needPx);
       return parts[k];
@@ -246,7 +251,7 @@
     async function seal(k, heightCss) {
       const p = parts[k];
       if (p.blob) return;
-      const heightPx = Math.max(1, Math.min(PART_PX, Math.ceil(heightCss * scale)));
+      const heightPx = Math.max(1, Math.min(partPx, Math.ceil(heightCss * scale)));
       if (p.canvas.height !== heightPx) resize(p, heightPx);
       p.width = p.canvas.width;
       p.height = p.canvas.height;
@@ -353,7 +358,10 @@
     };
     window.addEventListener('keydown', onKey, true);
 
+    let tidy = false;
     const cleanUp = () => {
+      if (tidy) return;
+      tidy = true;
       window.removeEventListener('keydown', onKey, true);
       pins.restore();
       calm.remove();
@@ -480,7 +488,7 @@
       cleanUp();
 
       const notes =
-        (parts.length > 1 ? ' The page was too tall for one image, so it is in ' + parts.length + ' pieces.' : '') +
+        (parts.length > 1 ? ' The page was too large for one image, so it is in ' + parts.length + ' pieces.' : '') +
         (scaledDown ? ' It was scaled down to fit.' : '') +
         (truncated ? ' It stops after ' + MAX_ROWS + ' screens because the page kept growing.' : '');
       const info = {

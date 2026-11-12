@@ -388,7 +388,7 @@ const Pdf = require('../pdf.js');
     ['scripting', 'offscreen', 'declarativeNetRequestWithHostAccess', 'downloads', 'webRequest', 'storage', 'contextMenus']
       .filter((p) => !manifest.permissions.includes(p)), []);
   eq('manifest description fits the store limit', manifest.description.length <= 132, true);
-  const api = /const api = \{([\s\S]*?)\n  \};/.exec(read('content.js'))[1];
+  const api = /const api = \{([\s\S]*?)\n {2}\};/.exec(read('content.js'))[1];
   const used = new Set();
   for (const f of ['capture.js', 'gallery.js']) {
     for (const m of read(f).matchAll(/\bapi\.([A-Za-z_$][\w$]*)/g)) used.add(m[1]);

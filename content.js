@@ -561,6 +561,9 @@
     const id = o.id || 'toast-' + (++toastSeq);
     let t = toasts.get(id);
     if (!t || !t.el.isConnected) {
+      // The page took the old one away. Its timer must go with it, or it would
+      // later dismiss the message that replaces it.
+      if (t) clearTimeout(t.timer);
       const el = document.createElement('div');
       el.innerHTML = '<span class="msg"></span><button class="x" aria-label="Dismiss">&times;</button>' +
                      '<div class="bar" hidden><i></i></div><div class="acts"></div>';

@@ -106,6 +106,26 @@ Not verified: a physical high-DPI display. C02 runs under an emulated ratio, whi
 
 Nothing is left on the known-defect list. What remains is in the README under Tests: the things automation cannot reach.
 
+## Status after Phase 5 (v1.4.1)
+
+Phase 5 was housekeeping, plus a last read through the whole of the code.
+
+- **Lint.** ESLint runs over every file (`npm run lint`). The first run found nothing wrong in the shipped code: the only reports were the deliberate `var X = X || ...` opening of the three files that can be loaded into a page twice, and two nits in the tests.
+- **Continuous checks.** Lint, the offline checks, the browser checks and the release-zip check run on GitHub for every push to `main` and every pull request.
+- **Demo.** `npm run demo` drives the real extension on a made-up page and turns Chromium's own screen recording into `docs/img/demo.gif`. Writing it turned up nothing in the extension; the one surprise was the script's own (it pointed at a picture below the fold, and Snaffle correctly said there was nothing under the pointer).
+
+Found by reading, and fixed:
+
+| Finding | Fix |
+| --- | --- |
+| A page that is very wide as well as tall could still ask for a canvas of about 1 GB: pieces were limited by height only | Pieces are limited by area too (64 million pixels), so a wide page gets shorter pieces |
+| The three-minute limit on a paused capture started again each time the tab was looked at | One limit for the whole pause |
+| The results page said "the screenshot never reached this page" after 60 seconds even if a very large one was still arriving | Only said when nothing at all has arrived |
+| A status line left over from an earlier message could stay on the results page | Cleared when the screenshot is shown |
+| Putting the page back after a capture could run twice if handing over to the results page failed | Runs once |
+
+Found by the browser checks, and fixed: the tab-switch check (C05) began failing about one run in two. The picture was always right; what went missing was the "Paused" message. When a page removes one of Snaffle's messages from the document, the message is made again the next time it is needed, but the old one's timer was left running and later dismissed its replacement. The tests remove messages between checks, which is how it showed. The timer is now cleared, and C05 fails if the message goes missing at any point while the tab is behind.
+
 G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an extension's filename hook when downloads are driven through the automation protocol. The renaming logic is unit-tested; the end-to-end behaviour needs a manual check.
 
 The rest of this document is the original Phase 0 record.

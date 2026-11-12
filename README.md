@@ -9,9 +9,19 @@
   Rebuild streamed video, capture whole pages, bulk-download the lot.
 </p>
 
+<p align="center">
+  <a href="https://github.com/melovibes/snaffle/actions/workflows/tests.yml"><img src="https://github.com/melovibes/snaffle/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/melovibes/snaffle/releases/latest"><img src="https://img.shields.io/github/v/release/melovibes/snaffle" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-blue" alt="MIT licence"></a>
+</p>
+
 ---
 
 A Chrome extension that saves whatever image or video is under your mouse pointer, triggered by a key combination or a mouse click you assign yourself.
+
+![Saving two pictures with a key, downloading three from the media list, then capturing the whole page](docs/img/demo.gif)
+
+<sub>Recorded from the real extension on a made-up page by `npm run demo`. The pointer and the label naming the keys are drawn in by the recording script; everything else is Snaffle.</sub>
 
 ## Install
 
@@ -221,11 +231,15 @@ pwsh -File tools/make-icons.ps1
 
 ```
 npm install
+npm run lint          # ESLint over every file
 npm test              # 126 offline checks, a second or two
 npm run test:browser  # 83 checks in headless Chromium, about nine minutes; needs ffprobe on the PATH
-node test/browser/shots.js   # retake the screenshots in docs/img
 npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
+npm run shots         # retake the screenshots in docs/img
+npm run demo          # re-record docs/img/demo.gif; needs ffmpeg on the PATH
 ```
+
+All three of lint, the offline checks and the browser checks run on GitHub for every push to `main` and every pull request (`.github/workflows/tests.yml`), along with a check that the release zip builds and loads.
 
 **Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, shortcut warnings, content-type verdicts, stream grouping, the PDF writer's byte offsets, static wiring between the scripts, the manifest and the HTML, and a handful of accessibility rules (no focus ring removed without a replacement, no text under 12px, controls named for what they do).
 
