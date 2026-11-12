@@ -5,10 +5,12 @@
   "description": "Chrome extension: grab media off any page. This package.json exists for the test tooling only; the extension itself has no build step.",
   "scripts": {
     "test": "node test/snaffle.test.js",
-    "test:browser": "node test/browser/run.js"
+    "test:browser": "node test/browser/run.js",
+    "package": "node tools/make-zip.js"
   },
   "devDependencies": {
     "playwright": "^1.64.0",
     "pngjs": "^7.0.0"
-  }
+  },
+  "license": "MIT"
 }

@@ -8,21 +8,16 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 const ROOT = path.join(__dirname, '..', '..');
-const SHIPPED = ['manifest.json', 'shared.js', 'hls.js', 'background.js', 'content.js', 'capture.js', 'gallery.js',
-                 'offscreen.html', 'offscreen.js',
-                 'options.html', 'options.js', 'options.css', 'popup.html', 'popup.js', 'popup.css'];
-const SHIPPED_DIRS = ['icons', 'vendor'];
+const { FILES: SHIPPED } = require('../../tools/shipped');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Only the files that ship are copied, so a test run also proves the extension
 // does not depend on anything outside that list.
 function stageExtension(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-  for (const f of SHIPPED) fs.copyFileSync(path.join(ROOT, f), path.join(dir, f));
-  for (const d of SHIPPED_DIRS) {
-    fs.mkdirSync(path.join(dir, d), { recursive: true });
-    for (const f of fs.readdirSync(path.join(ROOT, d))) fs.copyFileSync(path.join(ROOT, d, f), path.join(dir, d, f));
+  for (const f of SHIPPED) {
+    fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+    fs.copyFileSync(path.join(ROOT, f), path.join(dir, f));
   }
 }
 

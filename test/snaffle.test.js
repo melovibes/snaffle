@@ -357,6 +357,13 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
   const wantedFiles = ['shared.js', 'hls.js', 'offscreen.html', 'offscreen.js', 'capture.js', 'gallery.js',
     'vendor/mediabunny.min.mjs', 'vendor/mediabunny.LICENSE.txt', manifest.background.service_worker, manifest.options_page];
   eq('every file loaded at run time is present', wantedFiles.filter((x) => !fs.existsSync(path.join(ROOT, x))), []);
+  // The list the tests load and the release zip is built from must cover
+  // everything the extension reaches for, and name nothing that is not there.
+  const shipped = require('../tools/shipped.js');
+  eq('the shipped-file list covers every file loaded at run time', wantedFiles.filter((x) => !shipped.FILES.includes(x)), []);
+  eq('every shipped file exists', shipped.FILES.concat(shipped.DOCS).filter((x) => !fs.existsSync(path.join(ROOT, x))), []);
+  eq('every icon the manifest names is shipped', Object.values(manifest.icons).filter((x) => !shipped.FILES.includes(x)), []);
+  eq('the licence is MIT and travels with the release', [/^MIT License/.test(read('LICENSE')), shipped.DOCS.includes('LICENSE')], [true, true]);
   eq('the worker page loads its scripts in dependency order',
     [...read('offscreen.html').matchAll(/src="([^"]+)"/g)].map((m) => m[1]), ['shared.js', 'hls.js', 'offscreen.js']);
   for (const html of ['options.html', 'popup.html']) {

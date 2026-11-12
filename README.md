@@ -15,9 +15,11 @@ A Chrome extension that saves whatever image or video is under your mouse pointe
 
 ## Install
 
+Download `snaffle-<version>.zip` from the [latest release](https://github.com/melovibes/snaffle/releases/latest) and unzip it, or clone this repository. Then:
+
 1. Open `chrome://extensions`
 2. Turn on **Developer mode** (top right)
-3. Click **Load unpacked** and pick the folder you cloned this into
+3. Click **Load unpacked** and pick the unzipped or cloned folder
 
 Tabs that were already open work straight away: Snaffle loads itself into them when it is installed or updated.
 
@@ -212,6 +214,7 @@ npm install
 npm test              # 115 offline checks, a second or two
 npm run test:browser  # 76 checks in headless Chromium, about seven minutes; needs ffprobe on the PATH
 node test/browser/shots.js   # retake the screenshots in docs/img
+npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
 ```
 
 **Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, shortcut warnings, content-type verdicts, stream grouping, the PDF writer's byte offsets, static wiring between the scripts, the manifest and the HTML, and a handful of accessibility rules (no focus ring removed without a replacement, no text under 12px, controls named for what they do).
@@ -254,4 +257,9 @@ When it recognizes your trigger, Snaffle hides `pointerdown` from the page and c
 - Permissions, and why each is there: `<all_urls>` because media can be on any site and screenshots need it; `webRequest` to see the video playlist URLs a page requests; `scripting` to load Snaffle into tabs that were open before it was installed, and to load the screenshot and media-list code on demand; `offscreen` for the hidden worker page; `declarativeNetRequestWithHostAccess` to add a `Referer` to the extension's own video requests. Chrome describes that permission as reading your browsing history. Nothing is read off-page and nothing is sent anywhere — recorded playlist URLs live in `chrome.storage.session`, which is memory-only, cleared when Chrome closes, and pruned after two hours. Downloads go straight to your disk.
 - Settings live in `chrome.storage.sync`, so they follow your Chrome profile across machines.
 - Rebuilding a streamed video holds the finished file in memory before saving it, so a very long video needs that much free memory.
-- Mediabunny is bundled unmodified under the Mozilla Public License 2.0; its licence text is in `vendor/`. Snaffle's own code has no licence file yet.
+
+## Licence
+
+Snaffle is released under the [MIT licence](LICENSE): use it, change it and share it, as long as the copyright notice stays with it.
+
+It bundles one third-party library, [Mediabunny](https://mediabunny.dev), unmodified, under the Mozilla Public License 2.0. That file keeps its own licence, whose text is in `vendor/`.
