@@ -89,6 +89,20 @@ const OUT = path.join(__dirname, '..', '..', 'docs', 'img');
   await shot(list, 'media-list.png');
   await list.close();
 
+  /* a screenshot, on the page it opens in */
+  const subject = await h.newPage(A.origin + '/pages/grab.html');
+  await sleep(700);
+  await subject.mouse.move(900, 300);
+  const opened = h.context.waitForEvent('page', { timeout: 30000 });
+  await subject.keyboard.press('Alt+Shift+KeyS');
+  const result = await opened;
+  await result.waitForFunction(() => document.querySelector('#shots img') && document.querySelector('#shots img').complete, null, { timeout: 30000 });
+  await result.setViewportSize({ width: 1100, height: 760 });
+  await sleep(500);
+  await shot(result, 'result.png');
+  await result.close();
+  await subject.close();
+
   await h.close();
   await A.close(); await B.close();
   console.log('wrote', fs.readdirSync(OUT).join(', '));

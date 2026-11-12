@@ -883,7 +883,7 @@
     get cfg() { return cfg; },
     alive,
     retire() { dead = true; if (shadowHost) shadowHost.remove(); },
-    ui, toast, dismissToast, showAction, flash, ask, pageDownload, saveBlob, savedText, announce, fallback,
+    ui, toast, dismissToast, showAction, flash, ask, pageDownload, toBase64, saveBlob, savedText, announce, fallback,
     resolve, elementStack, ancestors, tokensFor, statusInfo, hostToken,
     fromImg, fromVideo, fromBackground, linkFor, fallbacks,
     abs, upgrade, parseSrcset, grab,

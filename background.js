@@ -440,13 +440,20 @@ async function finishStream(msg) {
 
 /* ------------------------------------------------- screenshots and bulk ops */
 
-// captureVisibleTab is quota-limited to a couple of calls per second, and the
-// quota error is retryable - a stitched capture of a long page will hit it.
+// captureVisibleTab shoots whichever tab is in front of the window, not the
+// tab that asked. If the user has switched away, say so instead of handing
+// back a picture of some other page. It is also quota-limited to a couple of
+// calls per second, and that error is retryable.
 async function captureViewport(sender) {
   if (!sender.tab) return { ok: false, error: 'no tab' };
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const dataUrl = await chrome.tabs.captureVisibleTab(sender.tab.windowId, { format: 'png' });
+      const tab = await chrome.tabs.get(sender.tab.id);
+      if (!tab.active) return { ok: false, inactive: true };
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
+      // Switching tabs while the shot was being taken would also be wrong.
+      const still = await chrome.tabs.get(sender.tab.id);
+      if (!still.active) return { ok: false, inactive: true };
       if (dataUrl) return { ok: true, dataUrl };
     } catch (e) {
       const m = String((e && e.message) || e);
@@ -454,14 +461,32 @@ async function captureViewport(sender) {
       await sleep(600);
     }
   }
-  return { ok: false, error: 'capture did not return an image' };
+  return { ok: false, error: 'the capture did not return an image' };
 }
 
-async function setBadge(text, tabId) {
+// The page a screenshot is shown on before it is saved. It is opened behind
+// the current tab and brings itself forward once it has the image. The capture
+// script is told to start sending only when the page says it is listening.
+const resultWaiters = new Map();
+
+async function openResult(sender) {
+  const id = 'shot-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const ready = new Promise((res) => {
+    resultWaiters.set(id, res);
+    setTimeout(() => { if (resultWaiters.delete(id)) res(false); }, 10000);
+  });
   try {
-    await chrome.action.setBadgeText({ text: String(text || ''), tabId });
-    if (text) await chrome.action.setBadgeBackgroundColor({ color: '#2563eb', tabId });
-  } catch (_) {}
+    await chrome.tabs.create({
+      url: chrome.runtime.getURL('result.html?id=' + id),
+      active: false,
+      index: sender.tab ? sender.tab.index + 1 : undefined,
+      openerTabId: sender.tab ? sender.tab.id : undefined
+    });
+  } catch (_) {
+    resultWaiters.delete(id);
+    return { ok: false };
+  }
+  return { ok: await ready, id };
 }
 
 // Media lives in every frame, but tabs.sendMessage only hands back one reply.
@@ -516,7 +541,7 @@ async function runFeature(name, tabId) {
     await injectCore(tabId);
     await chrome.scripting.executeScript({
       target: name === 'gallery' ? { tabId, allFrames: true } : { tabId, frameIds: [0] },
-      files: [name + '.js']
+      files: name === 'capture' ? ['pdf.js', 'capture.js'] : [name + '.js']
     });
   } catch (_) {
     return { ok: false, error: 'Snaffle cannot run on this page.' };
@@ -547,6 +572,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'blobSave': blobSave(msg).then(sendResponse); return true;
     case 'proxyGrab': proxyGrab(msg).then(sendResponse); return true;
     case 'captureViewport': captureViewport(sender).then(sendResponse); return true;
+    case 'openResult': openResult(sender).then(sendResponse); return true;
+    case 'resultReady': {
+      const waiting = resultWaiters.get(msg.id);
+      if (waiting) { resultWaiters.delete(msg.id); waiting(true); }
+      sendResponse({ ok: true });
+      return false;
+    }
     case 'collectMedia': collectMedia(sender).then(sendResponse); return true;
     case 'feature': runFeature(msg.name, tabId).then(sendResponse); return true;
     case 'canRun':
@@ -576,11 +608,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
     }
-    case 'badge':
-      setBadge(msg.text, sender.tab ? sender.tab.id : undefined);
-      sendResponse({ ok: true });
-      return false;
-
     case 'relayTop':
       if (sender.tab) {
         chrome.tabs.sendMessage(sender.tab.id, { type: msg.action, text: msg.text, kind: msg.kind, opts: msg.opts }, { frameId: 0 },

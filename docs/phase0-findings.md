@@ -82,16 +82,29 @@ Phase 3 was the interface: messages, the options page, the popup, and the media 
 
 Found while building it, and fixed: the typing guard looked at the retargeted event target, so typing in a text box inside a shadow root (web components) did not count as typing and a trigger could fire mid-word (G30).
 
-Still open, by phase:
+## Status after Phase 4 (v1.4.0)
 
-| Check | Defect | Phase |
+**83 checks: 83 pass, none known to fail, 1 not observable under automation.**
+
+Phase 4 was the screenshot. The capture was rewritten rather than patched: the four tracked defects shared a cause, which was a single canvas sized once from numbers the browser reported.
+
+| Defect | Now | Checks |
 | --- | --- | --- |
-| C02 | Capture trusts `devicePixelRatio` instead of measuring the shot | 4 |
-| C03 | Fixed elements hidden before the first shot | 4 |
-| C04 | Inner scrolling containers not detected | 4 |
-| C05 | No check that the tab is still in front | 4 |
+| Fixed header and footer were missing from every screen | Top bars on the first screen, bottom bars on the last, neither repeated; bars that become fixed on scroll are caught as they appear | C03 |
+| A page scrolling inside a container gave one screen | The scrolling box is found and unrolled; what is above stays on top and what is below follows it | C04, C14 |
+| Switching tabs put the other tab in the image | The service worker checks the tab is in front before and after each shot; the capture pauses and resumes | C05 |
+| The image was mostly blank when the reported pixel ratio and the shot disagreed | The scale is measured from the first shot | C02 |
+| A long page could ask for about 1 GB of canvas | Images are at most 16,000px tall; a taller page is several images, each released as it is finished | C07 |
+| A page that grows as it is scrolled was cut off at its starting height | Height is measured again after every screen, up to 100 screens | C08 |
+| No way to cancel, and progress was a toolbar badge | A message with the screen count and a Cancel button; Escape cancels and restores the page | C10 |
+| The open media list would have been photographed | Snaffle's own panels are hidden for each shot | - |
+| A blind download in a format chosen beforehand | The screenshot opens on its own page; save as PNG, JPEG or PDF, or copy it, under a chosen name | C09, C12 |
 
-Screenshot interface work that is also Phase 4: a way to cancel a capture, a results page instead of a blind download, and choosing the format at capture time.
+Sideways-scrolling pages were already supported but untested, and now have a check (C13).
+
+Not verified: a physical high-DPI display. C02 runs under an emulated ratio, which is the case that used to fail; the measuring fix covers both, but only the emulated one has been seen to work.
+
+Nothing is left on the known-defect list. What remains is in the README under Tests: the things automation cannot reach.
 
 G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an extension's filename hook when downloads are driven through the automation protocol. The renaming logic is unit-tested; the end-to-end behaviour needs a manual check.
 

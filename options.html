@@ -122,20 +122,27 @@
     <section class="card">
       <h2>Full-page screenshots</h2>
       <label class="field">
-        <span>Save as</span>
-        <select id="captureFormat">
+        <span>After a screenshot is taken</span>
+        <select id="captureThen">
+          <option value="review">Open it, so I can check it and choose how to save it</option>
+          <option value="save">Save it straight away</option>
+        </select>
+      </label>
+      <label class="field">
+        <span id="formatLabel">Format</span>
+        <select id="captureFormat" aria-labelledby="formatLabel">
           <option value="png">PNG - exact, larger files</option>
           <option value="jpeg">JPEG - smaller, slightly softer</option>
-          <option value="pdf">PDF - one long page</option>
+          <option value="pdf">PDF - a long page, or several for a very tall one</option>
         </select>
       </label>
       <label class="field" id="qualityRow">
-        <span>Quality, 10 to 100</span>
+        <span>Quality for JPEG and PDF, 10 to 100</span>
         <input type="number" id="captureQuality" min="10" max="100" step="1">
       </label>
       <label class="row switch">
         <input type="checkbox" id="captureHideFixed">
-        <span><strong>Keep sticky headers from repeating</strong><em>Otherwise a fixed navigation bar is repeated down the image.</em></span>
+        <span><strong>Keep fixed bars from repeating</strong><em>A bar fixed to the top is kept on the first screen only and one fixed to the bottom on the last, instead of both being repeated down the image.</em></span>
       </label>
       <label class="row switch">
         <input type="checkbox" id="captureFullWidth">

@@ -17,12 +17,7 @@ const { launch, sleep } = require('./harness');
 const { start } = require('./server');
 
 // Defect id -> the phase that fixes it. See docs/phase0-findings.md.
-const KNOWN_FAILING = {
-  C02: 'phase 4: capture trusts devicePixelRatio instead of measuring the shot',
-  C03: 'phase 4: fixed elements are hidden before the first shot',
-  C04: 'phase 4: inner scrolling containers are not detected',
-  C05: 'phase 4: no check that the tab is still in front'
-};
+const KNOWN_FAILING = {};
 
 const only = process.argv[2] || '';
 const results = [];
@@ -509,33 +504,45 @@ const base = (u) => {
 
   /* ========================================================== screenshot */
 
-  // Start a capture and wait for the file it produces.
+  // Start a capture and wait for what it leaves: the files Chrome recorded,
+  // newest last, with their bytes.
   async function shoot(hh, page, o) {
-    const opt = Object.assign({ timeout: 30000 }, o || {});
+    const opt = Object.assign({ timeout: 40000, files: 1 }, o || {});
     const marks = await mark(hh);
     await clearToast(page);
     await page.keyboard.press('Alt+Shift+KeyS');
     if (opt.during) await opt.during();
     const end = Date.now() + opt.timeout;
-    let api = [];
+    let done = [];
     while (Date.now() < end) {
-      api = (await hh.apiDownloads()).filter((d) => !marks.ids.has(d.id) && d.state === 'complete');
-      if (api.length) break;
+      done = (await hh.apiDownloads()).filter((d) => !marks.ids.has(d.id) && d.state === 'complete');
+      if (done.length >= opt.files) break;
       const t = await hh.toast(page);
-      if (t && /failed|cancel/i.test(t.text)) break;
+      if (t && /could not be taken|cancelled/i.test(t.text)) break;
       await sleep(250);
     }
-    const out = await outcome(hh, page, marks, 700);
-    const name = (/^Saved (.+?) \(/.exec(out.finalToast) || [])[1] || '';
-    return { toast: out.finalToast, name, bytes: out.bytes, anchors: out.anchors };
+    await sleep(700);
+    done = (await hh.apiDownloads()).filter((d) => !marks.ids.has(d.id) && d.state === 'complete').sort((a, b) => a.id - b.id);
+    const toast = await hh.toast(page);
+    const said = toast ? toast.text : '';
+    const files = done.map((d) => { try { return fs.readFileSync(d.filename); } catch (_) { return null; } });
+    const name = (/^Saved (?:\d+ images, starting with )?(.+?\.(?:png|jpg|pdf))/.exec(said) || [])[1] || '';
+    return { toast: said, name, bytes: files[files.length - 1] || null, files };
   }
   const px = (png, x, y) => {
     const i = (y * png.width + x) * 4;
     return '#' + [png.data[i], png.data[i + 1], png.data[i + 2]].map((v) => v.toString(16).padStart(2, '0')).join('');
   };
   const BANDS = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#00ffff'];
+  // The centre of each 500px band, read at the image's own scale.
+  const bandsOf = (png, n, each) => Array.from({ length: n }, (_, i) =>
+    px(png, Math.floor(png.width / 2), Math.min(png.height - 1, Math.floor((i + 0.5) * each * (png.width / 1000)))));
 
   if (!only || only === 'shot') {
+    // Most checks here read the saved file, so save straight away. The page a
+    // screenshot normally opens in is checked at the end.
+    await h.setCfg({ captureThen: 'save' });
+
     const tall = await h.newPage(A.origin + '/pages/tall.html');
     await sleep(500);
     await tall.mouse.move(300, 300);
@@ -544,10 +551,9 @@ const base = (u) => {
       const s = await shoot(h, tall);
       if (!s.bytes) return { ok: false, observed: 'no file; toast "' + s.toast + '"' };
       const png = PNG.sync.read(s.bytes);
-      const seen = BANDS.map((_, i) => px(png, 500, Math.min(png.height - 1, i * 500 + 250)));
-      const inFolder = /^Snaffle\/127\.0\.0\.1\//.test(s.name) && !s.anchors.length;
-      const ok = png.width === 1000 && png.height === 2500 && seen.join() === BANDS.join() && inFolder;
-      return { ok, observed: png.width + 'x' + png.height + ', band colours ' + seen.join(' ') + '; saved as ' + s.name + '; scroll restored to ' + await tall.evaluate(() => window.scrollY) };
+      const seen = bandsOf(png, 5, 500);
+      const ok = png.width === 1000 && png.height === 2500 && seen.join() === BANDS.join() && s.name === 'Snaffle/127.0.0.1/Tall fixture.png';
+      return { ok, observed: png.width + 'x' + png.height + ', band colours ' + seen.join(' ') + '; toast "' + s.toast + '"; scroll restored to ' + await tall.evaluate(() => window.scrollY) };
     });
 
     await check('shot', 'C06', null, 'JPEG and PDF output are valid files', async () => {
@@ -565,21 +571,49 @@ const base = (u) => {
       return { ok: jpegOk && pdfOk && embedded, observed: 'jpeg ' + (jpegOk ? 'valid (' + j.name + ')' : 'INVALID: got "' + j.name + '", toast "' + j.toast + '"') + '; pdf ' + (pdfOk ? 'structure valid' : 'INVALID') + ', embedded JPEG ' + (embedded ? 'present' : 'MISSING') + ' (' + p.name + ')' };
     });
 
-    await check('shot', 'C05', 11, 'Switching tabs during a capture does not put the other tab in the image', async () => {
+    await check('shot', 'C05', 11, 'Switching tabs during a capture pauses it; the other tab never gets into the image', async () => {
       const other = await h.context.newPage();
       await other.goto(A.origin + '/pages/lime.html');
       await tall.bringToFront();
       await tall.mouse.move(300, 300);
+      let paused = '';
       // Leave the other tab in front for a while, as a user checking something would.
       const s = await shoot(h, tall, {
-        during: async () => { await sleep(900); await other.bringToFront(); await sleep(6000); await tall.bringToFront(); }
+        during: async () => {
+          await sleep(900);
+          await other.bringToFront();
+          await sleep(5000);
+          const t = await h.toast(tall);
+          paused = t ? t.text : '';
+          await tall.bringToFront();
+        }
       });
       await other.close();
-      if (!s.bytes) return { ok: /cancel|abort|switch|stopped/i.test(s.toast), observed: 'no image produced; toast "' + s.toast + '"' };
+      if (!s.bytes) return { ok: false, observed: 'no image produced; while away: "' + paused + '"; toast "' + s.toast + '"' };
       const png = PNG.sync.read(s.bytes);
-      const seen = BANDS.map((_, i) => px(png, 500, Math.min(png.height - 1, i * 500 + 250)));
+      const seen = bandsOf(png, 5, 500);
       const lime = seen.filter((c) => c === '#7fff00').length;
-      return { ok: lime === 0, observed: lime + ' of 5 bands show the other tab (lime #7fff00); band colours ' + seen.join(' ') + '; toast "' + s.toast + '"' };
+      return { ok: lime === 0 && seen.join() === BANDS.join() && /Paused/.test(paused), observed: lime + ' of 5 bands show the other tab; band colours ' + seen.join(' ') + '; while away the tab said "' + paused + '"' };
+    });
+
+    await check('shot', 'C10', null, 'A capture shows its progress and Escape cancels it, leaving the page as it was', async () => {
+      const marks = await mark(h);
+      await clearToast(tall);
+      await tall.evaluate(() => window.scrollTo(0, 400));
+      await tall.keyboard.press('Alt+Shift+KeyS');
+      await sleep(1300);
+      const during = await h.toast(tall);
+      await tall.keyboard.press('Escape');
+      const said = await h.settledToast(tall, 6000);
+      await sleep(1500);
+      const after = await tall.evaluate(() => ({
+        y: window.scrollY,
+        calm: Array.from(document.querySelectorAll('style')).filter((x) => /animation-duration:0s/.test(x.textContent)).length
+      }));
+      const files = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
+      const ok = !!during && /screen \d+ of \d+/.test(during.text) && during.actions.includes('Cancel') && during.progress != null &&
+                 /cancelled/i.test(said) && files === 0 && after.y === 400 && after.calm === 0;
+      return { ok, observed: 'while running: "' + (during ? during.text : '') + '", buttons [' + (during ? during.actions.join(', ') : '') + ']; after Escape: "' + said + '"; files ' + files + '; scroll back at ' + after.y + '; leftover styles ' + after.calm };
     });
     await tall.close();
 
@@ -592,40 +626,159 @@ const base = (u) => {
       const png = PNG.sync.read(s.bytes);
       const top = px(png, 500, 20), mid = px(png, 500, 680), end = px(png, 500, png.height - 20);
       const headerRepeats = [720, 1420, 2120].map((y) => px(png, 500, y)).filter((c) => c === '#000000').length;
-      const ok = top === '#000000' && mid !== '#ff00ff' && end === '#ff00ff' && headerRepeats === 0;
-      const restored = await fixed.evaluate(() => getComputedStyle(document.getElementById('bottom')).visibility);
-      return { ok, observed: 'y=20 is ' + top + (top === '#000000' ? ' (header)' : ' (header missing)') + ', y=680 is ' + mid + (mid === '#ff00ff' ? ' (footer baked into mid-page)' : '') + ', last 20px ' + end + (end === '#ff00ff' ? ' (footer)' : ' (footer missing)') + '; header repeats ' + headerRepeats + '; footer after capture: ' + restored };
+      const footerRepeats = [1380, 2080].map((y) => px(png, 500, y)).filter((c) => c === '#ff00ff').length;
+      const ok = top === '#000000' && mid !== '#ff00ff' && end === '#ff00ff' && headerRepeats === 0 && footerRepeats === 0;
+      const restored = await fixed.evaluate(() => getComputedStyle(document.getElementById('top')).visibility + '/' + getComputedStyle(document.getElementById('bottom')).visibility);
+      return { ok, observed: 'y=20 is ' + top + (top === '#000000' ? ' (header)' : ' (header missing)') + ', y=680 is ' + mid + (mid === '#ff00ff' ? ' (footer baked into mid-page)' : '') + ', last 20px ' + end + (end === '#ff00ff' ? ' (footer)' : ' (footer missing)') + '; repeats: header ' + headerRepeats + ', footer ' + footerRepeats + '; both back on the page after: ' + restored };
     });
     await fixed.close();
 
     const inner = await h.newPage(A.origin + '/pages/innerscroll.html');
     await sleep(500);
     await inner.mouse.move(300, 300);
-    await check('shot', 'C04', 12, 'A page that scrolls inside a container is captured in full, or the user is warned', async () => {
+    await check('shot', 'C04', 12, 'A page that scrolls inside a container is captured in full', async () => {
       const s = await shoot(h, inner);
-      if (!s.bytes) return { ok: /scrolls inside|could not capture/i.test(s.toast), observed: 'no file; toast "' + s.toast + '"' };
+      if (!s.bytes) return { ok: false, observed: 'no file; toast "' + s.toast + '"' };
       const png = PNG.sync.read(s.bytes);
-      // The page title is in the file name, so judge the message without it.
-      const warned = /only the visible|scrolls inside|could not capture|partial/i.test(s.toast.replace(s.name, ''));
-      return { ok: png.height >= 2500 || warned, observed: 'image is ' + png.width + 'x' + png.height + ' of a 2500px document; toast "' + s.toast + '"' };
+      const seen = bandsOf(png, 5, 500);
+      const back = await inner.evaluate(() => document.getElementById('app').scrollTop);
+      return { ok: png.width === 1000 && png.height === 2500 && seen.join() === BANDS.join() && back === 0, observed: 'image is ' + png.width + 'x' + png.height + ' of a 2500px scrolling area; band colours ' + seen.join(' ') + '; scroller put back at ' + back };
     });
     await inner.close();
 
+    const app = await h.newPage(A.origin + '/pages/app.html');
+    await sleep(500);
+    await app.mouse.move(300, 300);
+    await check('shot', 'C14', 12, 'In an app layout the bar stays on top, the list is unrolled, and the footer follows it', async () => {
+      const s = await shoot(h, app);
+      if (!s.bytes) return { ok: false, observed: 'no file; toast "' + s.toast + '"' };
+      const png = PNG.sync.read(s.bytes);
+      // 60px bar, then the 2500px list, then the 40px footer: 2600px in all.
+      const bar = px(png, 500, 30);
+      const bands = BANDS.map((_, i) => px(png, 500, 60 + i * 500 + 250));
+      const foot = px(png, 500, png.height - 20);
+      const strays = [680, 1300, 1900].map((y) => px(png, 500, y)).filter((c) => c === '#ff00ff' || c === '#000000').length;
+      const ok = png.height === 2600 && bar === '#000000' && bands.join() === BANDS.join() && foot === '#ff00ff' && strays === 0;
+      return { ok, observed: 'image is ' + png.width + 'x' + png.height + '; bar ' + bar + '; list bands ' + bands.join(' ') + '; footer at the very end ' + foot + '; bar or footer repeated mid-image: ' + strays };
+    });
+    await app.close();
+
+    const wide = await h.newPage(A.origin + '/pages/wide.html');
+    await sleep(500);
+    await wide.mouse.move(300, 300);
+    await check('shot', 'C13', null, 'A page that also scrolls sideways is captured across as well as down', async () => {
+      const s = await shoot(h, wide);
+      if (!s.bytes) return { ok: false, observed: 'no file; toast "' + s.toast + '"' };
+      const png = PNG.sync.read(s.bytes);
+      const quads = [[550, 300], [1650, 300], [550, 900], [1650, 900]].map(([x, y]) => px(png, x, y));
+      // Where screens meet there must be neither a gap nor a doubled strip.
+      const joins = [px(png, 1099, 300), px(png, 1100, 300), px(png, 550, 599), px(png, 550, 600)];
+      const ok = png.width === 2200 && png.height === 1200 && quads.join() === '#ff0000,#00ff00,#0000ff,#ffff00' && joins.join() === '#ff0000,#00ff00,#ff0000,#0000ff';
+      return { ok, observed: 'image is ' + png.width + 'x' + png.height + '; quadrants ' + quads.join(' ') + '; pixels either side of each join ' + joins.join(' ') };
+    });
+    await wide.close();
+
+    const growing = await h.newPage(A.origin + '/pages/growing.html');
+    await sleep(500);
+    await growing.mouse.move(300, 300);
+    await check('shot', 'C08', 15, 'A page that grows as it is scrolled is followed to its real end', async () => {
+      const s = await shoot(h, growing);
+      if (!s.bytes) return { ok: false, observed: 'no file; toast "' + s.toast + '"' };
+      const png = PNG.sync.read(s.bytes);
+      const want = BANDS.concat('#ff00ff');
+      const seen = bandsOf(png, 6, 500);
+      return { ok: png.height === 3000 && seen.join() === want.join(), observed: 'page was 1000px tall at the start; image is ' + png.width + 'x' + png.height + '; band colours ' + seen.join(' ') };
+    });
+    await growing.close();
+
+    const long = await h.newPage(A.origin + '/pages/long.html');
+    await sleep(500);
+    await long.mouse.move(300, 300);
+    await check('shot', 'C07', 14, 'A 20000px page is saved as two full-size images, not one huge or shrunken one', async () => {
+      const s = await shoot(h, long, { files: 2, timeout: 90000 });
+      const pngs = s.files.filter(Boolean).map((b) => PNG.sync.read(b));
+      if (pngs.length !== 2) return { ok: false, observed: pngs.length + ' file(s); toast "' + s.toast + '"' };
+      const colour = (i) => '#' + [10 + 12 * i, 250 - 12 * i, (37 * i) % 256].map((v) => v.toString(16).padStart(2, '0')).join('');
+      // Band i is 1000px tall; bands 0-15 are in the first image, 16-19 in the second.
+      const first = [0, 7, 15].map((i) => px(pngs[0], 500, i * 1000 + 500) === colour(i));
+      const second = [16, 19].map((i) => px(pngs[1], 500, (i - 16) * 1000 + 500) === colour(i));
+      // The join between the two files must fall exactly on a pixel row.
+      const seam = px(pngs[0], 500, 15999) === colour(15) && px(pngs[1], 500, 0) === colour(16);
+      const dims = pngs.map((p) => p.width + 'x' + p.height).join(' and ');
+      const ok = dims === '1000x16000 and 1000x4000' && first.concat(second).every(Boolean) && seam && /2 pieces/.test(s.toast);
+      return { ok, observed: dims + '; bands correct: ' + first.concat(second).join(',') + '; seam between files clean: ' + seam + '; toast "' + s.toast + '"' };
+    });
+    await long.close();
+
     // Device pixel ratio 2 needs its own browser.
     const h2 = await launch({ dpr: 2 });
-    await check('shot', 'C02', null, 'At device pixel ratio 2 the image is filled edge to edge', async () => {
+    await h2.setCfg({ captureThen: 'save' });
+    await check('shot', 'C02', null, 'When the reported pixel ratio and the capture disagree, the image is still filled edge to edge', async () => {
       const page = await h2.newPage(A.origin + '/pages/tall.html');
       await sleep(600);
       await page.mouse.move(300, 300);
       const s = await shoot(h2, page);
       if (!s.bytes) return { ok: false, observed: 'no file; toast "' + s.toast + '"' };
       const png = PNG.sync.read(s.bytes);
-      // Sample the centre of every band, wherever the image put it.
       const seen = BANDS.map((_, i) => px(png, Math.floor(png.width / 2), Math.floor((i + 0.5) * png.height / 5)));
-      const filled = seen.join() === BANDS.join();
-      return { ok: filled, observed: png.width + 'x' + png.height + '; band centres ' + seen.join(' ') + (filled ? '' : ' (#000000 is empty canvas)') };
+      const edge = px(png, png.width - 2, png.height - 2);
+      const reported = await page.evaluate(() => window.devicePixelRatio);
+      return { ok: seen.join() === BANDS.join() && edge === '#00ffff', observed: 'browser reports ratio ' + reported + '; image is ' + png.width + 'x' + png.height + '; band centres ' + seen.join(' ') + '; bottom-right pixel ' + edge };
     });
     await h2.close();
+
+    /* The default: a screenshot opens on its own page first. */
+    await h.setCfg({ captureThen: 'review' });
+    const src = await h.newPage(A.origin + '/pages/tall.html');
+    await sleep(500);
+    await src.mouse.move(300, 300);
+    let result = null;
+
+    await check('shot', 'C09', null, 'A screenshot opens on a page of its own, and nothing is saved until asked', async () => {
+      const marks = await mark(h);
+      const opened = h.context.waitForEvent('page', { timeout: 30000 });
+      await src.keyboard.press('Alt+Shift+KeyS');
+      result = await opened;
+      await result.waitForFunction(() => document.querySelector('#shots img') && document.querySelector('#shots img').complete, null, { timeout: 30000 });
+      await sleep(500);
+      const v = await result.evaluate(() => {
+        const img = document.querySelector('#shots img');
+        return {
+          url: location.pathname, title: document.getElementById('title').textContent, facts: document.getElementById('facts').textContent,
+          natural: img.naturalWidth + 'x' + img.naturalHeight, alt: img.alt, name: document.getElementById('name').value,
+          primary: Array.from(document.querySelectorAll('.btn.primary')).map((b) => b.dataset.format).join(),
+          enabled: Array.from(document.querySelectorAll('[data-format]')).every((b) => !b.disabled),
+          front: document.visibilityState
+        };
+      });
+      const saved = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
+      const srcToast = await h.toast(src);
+      const ok = v.url === '/result.html' && v.natural === '1000x2500' && /Tall fixture/.test(v.title) && /1000 x 2500 pixels/.test(v.facts) &&
+                 v.name === 'Tall fixture' && v.primary === 'png' && v.enabled && saved === 0 && v.front === 'visible' && !srcToast;
+      return { ok, observed: JSON.stringify(v) + '; files saved so far: ' + saved + '; toast left on the page: ' + (srcToast ? '"' + srcToast.text + '"' : 'none') };
+    });
+
+    await check('shot', 'C12', null, 'From that page it saves as PNG or PDF into the folder, under the name typed', async () => {
+      if (!result) return { ok: false, observed: 'the results page never opened' };
+      const marks = await mark(h);
+      await result.fill('#name', 'My capture');
+      await result.click('[data-format="png"]');
+      await result.waitForFunction(() => /^Saved/.test(document.getElementById('status').textContent), null, { timeout: 15000 });
+      const pngStatus = await result.evaluate(() => document.getElementById('status').firstChild.textContent);
+      const showButton = await result.evaluate(() => !!document.querySelector('#status .link'));
+      await result.click('[data-format="pdf"]');
+      await result.waitForFunction(() => /\.pdf/.test(document.getElementById('status').textContent), null, { timeout: 15000 });
+      const pdfStatus = await result.evaluate(() => document.getElementById('status').firstChild.textContent);
+      const done = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id) && d.state === 'complete').sort((a, b) => a.id - b.id);
+      const files = done.map((d) => fs.readFileSync(d.filename));
+      const png = files[0] ? PNG.sync.read(files[0]) : null;
+      const pdf = files[1] ? files[1].toString('latin1') : '';
+      const ok = pngStatus === 'Saved Snaffle/127.0.0.1/My capture.png.' && showButton && !!png && png.height === 2500 &&
+                 bandsOf(png, 5, 500).join() === BANDS.join() && pdfStatus === 'Saved Snaffle/127.0.0.1/My capture.pdf.' && pdf.startsWith('%PDF-1.4');
+      await result.close();
+      return { ok, observed: '"' + pngStatus + '" with Show in folder: ' + showButton + '; the PNG is ' + (png ? png.width + 'x' + png.height : 'missing') + '; then "' + pdfStatus + '", a ' + (pdf.startsWith('%PDF') ? 'valid PDF' : 'BAD file') };
+    });
+    await src.close();
   }
 
   /* ========================================================== media list */
@@ -864,14 +1017,21 @@ const base = (u) => {
       return { ok: saved === 'key,v' && /again/i.test(armed) && stillThere > 0 && after === undefined && label === 'Alt + S', observed: 'storage held [' + saved + ']; first press says "' + armed + '" and keeps it; second press leaves ' + (after === undefined ? 'nothing stored' : JSON.stringify(after)) + ', box back to "' + label + '"' };
     });
 
-    await check('ui', 'P07', null, 'The quality box is only shown when the format has a quality', async () => {
-      const png = await opt.evaluate(() => document.getElementById('qualityRow').hidden);
+    await check('ui', 'P07', null, 'The quality box is hidden only when it could not apply: saving straight away as PNG', async () => {
+      const hidden = () => opt.evaluate(() => document.getElementById('qualityRow').hidden);
+      const label = () => opt.evaluate(() => document.getElementById('formatLabel').textContent);
+      const review = [await hidden(), await label()];
+      await opt.selectOption('#captureThen', 'save');
+      await sleep(250);
+      const savePng = [await hidden(), await label()];
       await opt.selectOption('#captureFormat', 'jpeg');
       await sleep(250);
-      const jpeg = await opt.evaluate(() => document.getElementById('qualityRow').hidden);
-      const fmt = (await stored()).captureFormat;
+      const saveJpeg = await hidden();
+      const kept = await stored();
       await reset();
-      return { ok: png === true && jpeg === false && fmt === 'jpeg', observed: 'hidden for PNG: ' + png + '; hidden for JPEG: ' + jpeg + '; stored format: ' + fmt };
+      const ok = review[0] === false && review[1] === 'Format offered first' && savePng[0] === true && savePng[1] === 'Format' && saveJpeg === false &&
+                 kept.captureThen === 'save' && kept.captureFormat === 'jpeg';
+      return { ok, observed: 'opening first: quality hidden ' + review[0] + ', label "' + review[1] + '"; saving straight away as PNG: hidden ' + savePng[0] + ', label "' + savePng[1] + '"; as JPEG: hidden ' + saveJpeg + '; stored ' + kept.captureThen + '/' + kept.captureFormat };
     });
 
     await check('ui', 'P08', null, 'Shortcuts Chrome uses, keeps, or that clash are flagged as they are recorded', async () => {

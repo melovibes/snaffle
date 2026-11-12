@@ -92,18 +92,26 @@ Turn the whole thing off with **Rebuild streamed video into one file** in option
 
 `Alt + Shift + S`, or the popup button. Captures the whole scrollable page, not just the window.
 
-Chrome only hands an extension the *visible* viewport, so the page is scrolled a screenful at a time, each screen is captured through the service worker, and the shots are drawn onto one canvas at the position the page actually scrolled to — which makes the short final screen overlap correctly instead of duplicating content.
+![A screenshot on the page it opens in, with the save buttons](docs/img/result.png)
 
-Details that matter in practice:
+The screenshot opens on a page of its own. Nothing is saved until you choose: PNG, JPEG, PDF, or copy it to the clipboard, under a name you can change. If you would rather it saved straight away in a fixed format, the options page has a setting for that.
 
-- **Sticky headers are suppressed after the first screen.** Otherwise a fixed navbar is baked into the image once per screenful. Fixed elements are hidden (no reflow); sticky ones are pinned back to their flow position so they do not leave a gap. Toggleable.
-- **`captureVisibleTab` is quota-limited** to roughly two calls a second. Captures are paced accordingly and the quota error is retried, which is why a long page takes a few seconds per screen.
-- **Canvas limits are respected.** Chrome will not allocate past ~32000px a side or ~240M pixels, so a very long page is scaled down to fit rather than failing. The toast says when that happened.
-- **Lazy images get a beat to load** after each scroll.
-- Progress shows on the toolbar badge rather than in a toast, so the overlay never lands in the screenshot.
-- Output is PNG, JPEG, or a single-page PDF. The PDF embeds the JPEG directly (`DCTDecode`) and clamps the page to the 14400pt limit while keeping aspect ratio.
+Chrome only hands an extension the visible part of a tab, so the page is scrolled a screen at a time, each screen is captured, and the shots are stitched together at the position the page actually scrolled to.
 
-Horizontal capture is included for pages wider than the window, and can be turned off.
+What it handles:
+
+- **Fixed bars.** A bar fixed to the top is kept on the first screen only and one fixed to the bottom on the last, instead of both being repeated down the image. Sticky elements are put back where they sit in the page. Bars that only become fixed after scrolling are caught as they appear.
+- **Pages that scroll inside a box.** Many web apps never scroll the page itself. Snaffle finds the box that scrolls, keeps what is above it, unrolls its contents, and puts what is below it at the end.
+- **Pages that grow as you scroll.** The height is measured again after every screen, so an endless-scroll page is followed to its end, up to 100 screens.
+- **Very tall pages.** One image is at most 16,000 pixels tall. A taller page becomes several full-size images (or several pages of one PDF) rather than one enormous or shrunken one, and each piece is finished and released as the capture moves past it, so memory stays flat.
+- **Sideways scrolling**, for pages wider than the window. Can be turned off.
+- **Switching tabs.** A capture is always of the tab in front. If you switch away, it pauses and says so, and carries on when you come back, rather than photographing the other tab.
+- **The real pixel ratio.** The scale is measured from the first shot instead of taken from what the browser reports, which can disagree under zoom or device emulation.
+- **Lazy images and animations.** Images in view get a moment to load before each shot, and animations and transitions are stilled for the length of the capture.
+
+A message in the corner shows which screen it is on, with a **Cancel** button; Escape cancels too. Cancelling puts the page back exactly as it was. Snaffle's own messages and panels are never in the picture.
+
+It is paced to stay under Chrome's limit of about two captures a second, so a long page takes a little over half a second per screen.
 
 ## Page media list
 
@@ -185,6 +193,8 @@ Nothing in this chain ever returns fetched bytes to a web page. The worker page 
 | `hls.js` | playlist reading for the fallback segment-joiner |
 | `vendor/mediabunny.min.mjs` | [Mediabunny](https://mediabunny.dev) 1.65.2, unmodified, MPL-2.0 (licence alongside) |
 | `capture.js` | full-page screenshot; loaded into a tab only when asked for |
+| `result.html/.css/.js` | the page a screenshot opens on, to check it and choose how to save it |
+| `pdf.js` | a minimal PDF writer: one JPEG per page |
 | `gallery.js` | page media list; loaded into a tab only when asked for |
 | `options.html/.css/.js` | settings with key and mouse recorders |
 | `popup.html/.css/.js` | on/off switch, trigger summary, capture and list buttons |
@@ -211,8 +221,8 @@ pwsh -File tools/make-icons.ps1
 
 ```
 npm install
-npm test              # 115 offline checks, a second or two
-npm run test:browser  # 76 checks in headless Chromium, about seven minutes; needs ffprobe on the PATH
+npm test              # 126 offline checks, a second or two
+npm run test:browser  # 83 checks in headless Chromium, about nine minutes; needs ffprobe on the PATH
 node test/browser/shots.js   # retake the screenshots in docs/img
 npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
 ```
@@ -221,7 +231,7 @@ npm run package       # build snaffle-<version>.zip, the files that ship and not
 
 **Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. Saved bytes are read back: a rebuilt video is run through `ffprobe` for its tracks, frame count and length, and a screenshot is decoded and sampled. The streams are real ones made with ffmpeg, including split-audio, multi-rendition, MPEG-TS and Referer-guarded variants. The options page, the popup and the media list are driven the way a user would, keyboard included.
 
-Checks for defects that are understood but not yet fixed are listed in `KNOWN_FAILING` at the top of `test/browser/run.js`, each with the phase that fixes it. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale.
+A defect that is understood but not yet fixed goes in `KNOWN_FAILING` at the top of `test/browser/run.js` with a note. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale. It is empty at the moment.
 
 Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the popup as Chrome shows it from the toolbar (it is tested opened as a page and pointed at a tab), the "Show in folder" buttons actually opening a folder, the file-extension correction (Chrome skips that hook when downloads are driven by the automation protocol), and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
 

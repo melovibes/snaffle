@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>App fixture</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden}
+  body{display:flex;flex-direction:column}
+  #bar{flex:none;height:60px;background:#000000}
+  #list{flex:1;overflow:auto}
+  #list div{height:500px}
+  #foot{flex:none;height:40px;background:#ff00ff}
+</style></head>
+<body>
+<!-- The shape of most web apps: a bar that stays put, a list that scrolls
+     inside the page, and a footer under it. The document itself never scrolls. -->
+<div id="bar"></div>
+<div id="list">
+  <div style="background:#ff0000"></div><div style="background:#00ff00"></div><div style="background:#0000ff"></div>
+  <div style="background:#ffff00"></div><div style="background:#00ffff"></div>
+</div>
+<div id="foot"></div>
+</body></html>

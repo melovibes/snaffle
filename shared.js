@@ -16,6 +16,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     galleryKey: { enabled: true, code: 'KeyI', ctrl: false, alt: true, shift: true, meta: false },
     folder: 'Snaffle/{host}',
     template: '{name}.{ext}',
+    captureThen: 'review',     // 'review' opens it to look at first; 'save' saves it straight away
     captureFormat: 'png',
     captureQuality: 92,
     captureHideFixed: true,

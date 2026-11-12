@@ -253,15 +253,12 @@ eq('groups are ordered by most recent activity', twoVideos[twoVideos.length - 1]
 
 /* ------------------------------------------------------------------- PDF */
 
-const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW, pxH)',
-  '  api.capture = capturePage;', ['pdfFromJpeg']);
+const Pdf = require('../pdf.js');
 
 (async () => {
   // Not a real JPEG - the writer only embeds the bytes, it does not parse them.
   const jpeg = new Uint8Array(512).fill(0x5a);
-  const blob = await pdfFromJpeg(jpeg, 1200, 9000);
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  const text = Buffer.from(bytes).toString('latin1');
+  const text = Buffer.concat(Pdf.build([{ jpeg, width: 1200, height: 9000 }]).map((c) => Buffer.from(c))).toString('latin1');
 
   eq('pdf header', text.slice(0, 8), '%PDF-1.4');
   eq('pdf trailer present', /startxref\n(\d+)\n%%EOF\n$/.test(text), true);
@@ -292,11 +289,27 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
   eq('page height within the pdf limit', ptH <= 14400, true);
   eq('page keeps the image aspect ratio', Math.abs((ptW / ptH) - (1200 / 9000)) < 0.01, true);
 
+  // A capture too tall for one image is several, and so several pages.
+  const three = Buffer.concat(Pdf.build([
+    { jpeg: new Uint8Array(100).fill(0x41), width: 1000, height: 16000 },
+    { jpeg: new Uint8Array(200).fill(0x42), width: 1000, height: 16000 },
+    { jpeg: new Uint8Array(300).fill(0x43), width: 1000, height: 4000 }
+  ]).map((c) => Buffer.from(c))).toString('latin1');
+  eq('three images make three pages', [/\/Count 3 /.test(three), (three.match(/\/Type \/Page /g) || []).length], [true, 3]);
+  const sx3 = parseInt(/startxref\n(\d+)\n%%EOF/.exec(three)[1], 10);
+  const rows3 = three.slice(sx3).match(/^(\d{10}) 00000 n $/gm) || [];
+  eq('eleven objects: catalog, page tree, and three per page', rows3.length, 11);
+  eq('every offset in the multi-page file lands on its object',
+    rows3.every((line, i) => three.startsWith(String(i + 1) + ' 0 obj', parseInt(line.slice(0, 10), 10))), true);
+  eq('each page points at its own image and content',
+    [/\/Im0 4 0 R[^\n]*\/Contents 5 0 R/.test(three), /\/Im0 7 0 R[^\n]*\/Contents 8 0 R/.test(three), /\/Im0 10 0 R[^\n]*\/Contents 11 0 R/.test(three)], [true, true, true]);
+  eq('the page tree lists all three pages', /\/Kids \[3 0 R 6 0 R 9 0 R\]/.test(three), true);
+
   /* -------------------------------------------------- html / script wiring */
 
   // A typo in an id throws on page load and the whole options page dies, so
   // check that every id these scripts reach for is actually in the markup.
-  for (const [js, html] of [['options.js', 'options.html'], ['popup.js', 'popup.html']]) {
+  for (const [js, html] of [['options.js', 'options.html'], ['popup.js', 'popup.html'], ['result.js', 'result.html']]) {
     const ids = new Set();
     for (const m of read(html).matchAll(/\bid="([^"]+)"/g)) ids.add(m[1]);
     const wanted = new Set();
@@ -321,7 +334,7 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
   /* ------------------------------------------------------- accessibility */
 
   // Found by a design review; kept from coming back.
-  const uiCss = ['options.css', 'popup.css', 'gallery.js', 'content.js'].map((x) => [x, read(x)]);
+  const uiCss = ['options.css', 'popup.css', 'result.css', 'gallery.js', 'content.js'].map((x) => [x, read(x)]);
   eq('no focus outline is removed without a replacement in the same rule',
     uiCss.flatMap(([file, src]) => (src.match(/[^{}]*\{[^{}]*outline:\s*none[^{}]*\}/g) || [])
       .filter((rule) => !/outline:\s*\d/.test(rule) && !/box-shadow|background/.test(rule.replace(/outline:\s*none/, '')))
@@ -354,7 +367,8 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
     manifest.content_scripts[0].js, ['shared.js', 'content.js']);
 
   // Every file the extension loads at run time must exist.
-  const wantedFiles = ['shared.js', 'hls.js', 'offscreen.html', 'offscreen.js', 'capture.js', 'gallery.js',
+  const wantedFiles = ['shared.js', 'hls.js', 'pdf.js', 'offscreen.html', 'offscreen.js', 'capture.js', 'gallery.js',
+    'result.html', 'result.js', 'result.css',
     'vendor/mediabunny.min.mjs', 'vendor/mediabunny.LICENSE.txt', manifest.background.service_worker, manifest.options_page];
   eq('every file loaded at run time is present', wantedFiles.filter((x) => !fs.existsSync(path.join(ROOT, x))), []);
   // The list the tests load and the release zip is built from must cover
@@ -366,7 +380,7 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
   eq('the licence is MIT and travels with the release', [/^MIT License/.test(read('LICENSE')), shipped.DOCS.includes('LICENSE')], [true, true]);
   eq('the worker page loads its scripts in dependency order',
     [...read('offscreen.html').matchAll(/src="([^"]+)"/g)].map((m) => m[1]), ['shared.js', 'hls.js', 'offscreen.js']);
-  for (const html of ['options.html', 'popup.html']) {
+  for (const html of ['options.html', 'popup.html', 'result.html']) {
     eq(html + ' loads the shared module before its own script',
       [...read(html).matchAll(/<script src="([^"]+)"/g)].map((m) => m[1])[0], 'shared.js');
   }

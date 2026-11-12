@@ -146,6 +146,16 @@ function bindRecorder(t) {
 
 /* --------------------------------------------------------------- wiring */
 
+// When a screenshot is opened first, the format is chosen there, so the
+// setting only says which one is offered first, and the quality applies to
+// whichever is picked. When it is saved straight away, quality matters only
+// if the format has one.
+function paintCapture() {
+  const review = $('captureThen').value === 'review';
+  $('formatLabel').textContent = review ? 'Format offered first' : 'Format';
+  $('qualityRow').hidden = !review && $('captureFormat').value === 'png';
+}
+
 function render() {
   for (const f of FLAGS) $(f).checked = !!cfg[f];
   for (const t of TRIGGERS) {
@@ -154,11 +164,11 @@ function render() {
   }
   $('folder').value = cfg.folder || '';
   $('template').value = cfg.template || '';
+  $('captureThen').value = cfg.captureThen || 'review';
   $('captureFormat').value = cfg.captureFormat || 'png';
   $('captureQuality').value = cfg.captureQuality || 92;
   $('galleryMinSize').value = cfg.galleryMinSize || 0;
-  // Quality means nothing for PNG, so the box is only there when it does.
-  $('qualityRow').hidden = $('captureFormat').value === 'png';
+  paintCapture();
   renderPreview();
   renderHints();
 }
@@ -168,6 +178,7 @@ function collect() {
   for (const t of TRIGGERS) cfg[t.field].enabled = $(t.enabled).checked;
   cfg.folder = $('folder').value.trim();
   cfg.template = $('template').value.trim() || '{name}.{ext}';
+  cfg.captureThen = $('captureThen').value;
   cfg.captureFormat = $('captureFormat').value;
   cfg.captureQuality = Math.min(100, Math.max(10, parseInt($('captureQuality').value, 10) || 92));
   cfg.galleryMinSize = Math.max(0, parseInt($('galleryMinSize').value, 10) || 0);
@@ -183,10 +194,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   for (const id of FLAGS.concat(TRIGGERS.map((t) => t.enabled))) {
     $(id).addEventListener('change', () => persist(true));
   }
-  $('captureFormat').addEventListener('change', () => {
-    $('qualityRow').hidden = $('captureFormat').value === 'png';
-    persist(true);
-  });
+  for (const id of ['captureThen', 'captureFormat']) {
+    $(id).addEventListener('change', () => { paintCapture(); persist(true); });
+  }
   for (const id of ['folder', 'template']) {
     $(id).addEventListener('input', () => { renderPreview(); persist(false); });
   }

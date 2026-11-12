@@ -1,0 +1,17 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Growing fixture</title><style>html,body{margin:0}div{height:500px}</style></head>
+<body>
+<div style="background:#ff0000"></div><div style="background:#00ff00"></div>
+<script>
+  // An endless-scroll page in miniature: reaching the bottom adds another band,
+  // four times. It starts 1000px tall and ends 3000px tall.
+  const more = ['#0000ff', '#ffff00', '#00ffff', '#ff00ff'];
+  window.addEventListener('scroll', () => {
+    if (!more.length) return;
+    if (window.scrollY + window.innerHeight < document.documentElement.scrollHeight - 20) return;
+    const d = document.createElement('div');
+    d.style.background = more.shift();
+    document.body.appendChild(d);
+  });
+</script>
+</body></html>

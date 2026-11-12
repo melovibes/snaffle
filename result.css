@@ -1,0 +1,112 @@
+:root {
+  --bg: #eef0f3;
+  --panel: #ffffff;
+  --ink: #111827;
+  --muted: #5b6472;
+  --line: #d9dde3;
+  --accent: #2563eb;
+  --on-accent: #ffffff;
+  --warn: #92400e;
+  --bad: #b91c1c;
+  --good: #15803d;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b0d11;
+    --panel: #171a21;
+    --ink: #e5e7eb;
+    --muted: #a3acb9;
+    --line: #2a2f3a;
+    --accent: #60a5fa;
+    --on-accent: #0b0d11;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --good: #4ade80;
+  }
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+}
+
+/* The controls stay in reach however far down a long screenshot is scrolled. */
+header {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: flex-end; gap: 16px 20px; flex-wrap: wrap;
+  padding: 14px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.what { flex: 1; min-width: 220px; }
+h1 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+.facts { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+.name { display: block; min-width: 220px; flex: 1; max-width: 360px; }
+.name span { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.name input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+}
+
+.save { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn {
+  padding: 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit; font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.quiet { font-weight: 500; color: var(--muted); }
+
+input:focus-visible, .btn:focus-visible, .link:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+.status {
+  margin: 0;
+  padding: 0 20px;
+  min-height: 0;
+  color: var(--good);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.status:not(:empty) { padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.status.warn { color: var(--warn); }
+.status.bad { color: var(--bad); }
+.status.busy { color: var(--muted); }
+.link {
+  margin-left: 10px;
+  border: 0; background: none; padding: 0;
+  color: var(--accent);
+  font: inherit; font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+main { padding: 20px; display: grid; gap: 16px; justify-items: center; }
+main img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
+}
+.piece { margin: 0; color: var(--muted); font-size: 13px; justify-self: start; }

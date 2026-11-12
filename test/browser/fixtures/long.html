@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Long fixture</title><style>html,body{margin:0}div{height:1000px}</style></head>
+<body>
+<script>
+  // Twenty 1000px bands, 20000px in all: taller than one image is allowed to be.
+  // Band i is rgb(10 + 12i, 250 - 12i, (37i) mod 256), so a test can tell them apart.
+  for (let i = 0; i < 20; i++) {
+    const d = document.createElement('div');
+    d.style.background = 'rgb(' + (10 + 12 * i) + ',' + (250 - 12 * i) + ',' + ((37 * i) % 256) + ')';
+    document.body.appendChild(d);
+  }
+</script>
+</body></html>

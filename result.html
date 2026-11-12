@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Screenshot - Snaffle</title>
+  <link rel="stylesheet" href="result.css">
+</head>
+<body>
+  <header>
+    <div class="what">
+      <h1 id="title">Screenshot</h1>
+      <p id="facts" class="facts">Receiving the screenshot...</p>
+    </div>
+
+    <label class="name">
+      <span>File name</span>
+      <input type="text" id="name" spellcheck="false" autocomplete="off">
+    </label>
+
+    <div class="save" role="group" aria-label="Save or copy the screenshot">
+      <button type="button" class="btn" data-format="png" disabled>Save as PNG</button>
+      <button type="button" class="btn" data-format="jpeg" disabled>Save as JPEG</button>
+      <button type="button" class="btn" data-format="pdf" disabled>Save as PDF</button>
+      <button type="button" class="btn quiet" id="copy" disabled>Copy</button>
+    </div>
+  </header>
+
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+
+  <main id="shots" aria-label="The screenshot"></main>
+
+  <script src="shared.js"></script>
+  <script src="pdf.js"></script>
+  <script src="result.js"></script>
+</body>
+</html>

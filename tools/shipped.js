@@ -4,8 +4,9 @@
 
 const FILES = [
   'manifest.json',
-  'shared.js', 'hls.js', 'background.js', 'content.js', 'capture.js', 'gallery.js',
+  'shared.js', 'hls.js', 'pdf.js', 'background.js', 'content.js', 'capture.js', 'gallery.js',
   'offscreen.html', 'offscreen.js',
+  'result.html', 'result.js', 'result.css',
   'options.html', 'options.js', 'options.css',
   'popup.html', 'popup.js', 'popup.css',
   'icons/icon16.png', 'icons/icon32.png', 'icons/icon48.png', 'icons/icon128.png',
