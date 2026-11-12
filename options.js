@@ -85,10 +85,13 @@ function bindRecorder(t) {
   const btn = $(t.rec);
   const label = () => (t.kind === 'key' ? keyLabel(cfg[t.field]) : mouseLabel(cfg[t.field]));
   let listening = false;
+  // "Pressed" means it is waiting for the keys or the click.
+  btn.setAttribute('aria-pressed', 'false');
 
   const stop = () => {
     listening = false;
     btn.classList.remove('listening');
+    btn.setAttribute('aria-pressed', 'false');
     btn.textContent = label();
     renderHints();
   };
@@ -96,6 +99,7 @@ function bindRecorder(t) {
   const start = () => {
     listening = true;
     btn.classList.add('listening');
+    btn.setAttribute('aria-pressed', 'true');
     btn.textContent = t.kind === 'key' ? 'Press the keys...' : 'Click here with the button...';
     const hint = $(t.hint);
     hint.className = 'hint';

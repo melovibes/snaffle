@@ -76,7 +76,7 @@ code {
 section { margin-bottom: 12px; }
 h2 {
   margin: 0 0 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -121,7 +121,8 @@ body.off .keys, body.off .acts { opacity: 0.45; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   cursor: pointer;
 }
-.recent .file:hover, .recent .file:focus-visible { background: var(--code); outline: none; }
+.recent .file:hover { background: var(--code); }
+.recent .file:focus-visible { background: var(--code); outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .foot {
   display: flex; flex-direction: column; gap: 6px;
@@ -138,4 +139,5 @@ body.off .keys, body.off .acts { opacity: 0.45; }
   font: inherit; font-weight: 600;
   cursor: pointer;
 }
-.link:hover, .link:focus-visible { text-decoration: underline; outline: none; }
+.link:hover { text-decoration: underline; }
+.link:focus-visible { text-decoration: underline; outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }

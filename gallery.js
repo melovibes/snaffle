@@ -179,8 +179,8 @@
       background: repeating-conic-gradient(#1b1f27 0% 25%, #141821 0% 50%) 50% / 16px 16px;
     }
     .thumb img { max-width: 100%; max-height: 110px; display: block; }
-    .meta { padding: 7px 9px; font-size: 11px; color: #a3acb9; }
-    .meta b { display: block; color: #e5e7eb; font-weight: 600; font-size: 11px;
+    .meta { padding: 7px 9px; font-size: 12px; color: #a3acb9; }
+    .meta b { display: block; color: #e5e7eb; font-weight: 600; font-size: 12px;
               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .tick {
       position: absolute; top: 7px; left: 7px; width: 18px; height: 18px;
@@ -193,7 +193,7 @@
     }
     .badge {
       position: absolute; top: 7px; right: 7px; padding: 1px 6px; border-radius: 999px;
-      background: rgba(15,17,21,.85); font-size: 10px; color: #e5e7eb;
+      background: rgba(15,17,21,.85); font-size: 12px; color: #e5e7eb;
     }
     .card.done .badge.state { background: #065f46; }
     .card.failed .badge.state { background: #7f1d1d; }

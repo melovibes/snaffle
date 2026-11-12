@@ -143,4 +143,4 @@ button.ghost {
 button.ghost:hover { color: var(--ink); border-color: var(--accent); }
 button.ghost:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 button.ghost.small { padding: 7px 12px; font-size: 13px; margin-top: 4px; }
-button.ghost.danger { color: #fff; background: var(--bad); border-color: var(--bad); }
+button.ghost.danger { color: var(--card); background: var(--bad); border-color: var(--bad); }

@@ -318,6 +318,35 @@ const { pdfFromJpeg } = lift('capture.js', 'async function pdfFromJpeg(jpeg, pxW
   });
   eq('default key bindings are distinct', new Set(sigs).size, sigs.length);
 
+  /* ------------------------------------------------------- accessibility */
+
+  // Found by a design review; kept from coming back.
+  const uiCss = ['options.css', 'popup.css', 'gallery.js', 'content.js'].map((x) => [x, read(x)]);
+  eq('no focus outline is removed without a replacement in the same rule',
+    uiCss.flatMap(([file, src]) => (src.match(/[^{}]*\{[^{}]*outline:\s*none[^{}]*\}/g) || [])
+      .filter((rule) => !/outline:\s*\d/.test(rule) && !/box-shadow|background/.test(rule.replace(/outline:\s*none/, '')))
+      .map(() => file)), []);
+  eq('no text is set smaller than 12px',
+    uiCss.flatMap(([file, src]) => (src.match(/font(?:-size)?:[^;}]*?\b(\d+(?:\.\d+)?)px/g) || [])
+      .filter((decl) => parseFloat(/(\d+(?:\.\d+)?)px/.exec(decl)[1]) < 12).map((decl) => file + ': ' + decl.trim())), []);
+
+  const optionsHtml = read('options.html');
+  for (const id of ['key', 'mouse', 'capture', 'gallery']) {
+    // The button's text is the current shortcut, so its name must add what the
+    // shortcut is for rather than replace the text.
+    eq(id + ' recorder is named by its trigger title plus its own text',
+      new RegExp('id="' + id + 'Rec"[^>]*aria-labelledby="' + id + 'Name ' + id + 'Rec"').test(optionsHtml) &&
+      new RegExp('id="' + id + 'Name"').test(optionsHtml) && !new RegExp('id="' + id + 'Rec"[^>]*aria-label=').test(optionsHtml), true);
+    eq(id + ' recorder hint is announced when it changes',
+      new RegExp('id="' + id + 'Hint"[^>]*aria-live="polite"').test(optionsHtml), true);
+  }
+  const popupHtml = read('popup.html');
+  eq('the popup switch has a name that does not assert a state',
+    [/id="enabled"/.test(popupHtml), /role="switch"[^>]*id="enabled"[^>]*aria-label="Snaffle"/.test(popupHtml), /is on"/.test(popupHtml)], [true, true, false]);
+  eq('recent-file buttons say what they do', /setAttribute\('aria-label', 'Show ' \+ name/.test(read('popup.js')), true);
+  eq('theme-coloured buttons take their text colour from the theme',
+    /button\.ghost\.danger\s*\{[^}]*color:\s*var\(--card\)/.test(read('options.css')), true);
+
   // Only the core is in every frame of every page. The screenshot and media
   // list code is loaded into a tab when asked for.
   const manifest = JSON.parse(read('manifest.json'));

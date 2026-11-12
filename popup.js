@@ -37,6 +37,9 @@ function renderRecent() {
       b.className = 'file';
       const name = String(d.filename).split(/[\\/]/).pop();
       b.textContent = name;
+      // The visible text is only the file name. Say what pressing it does in
+      // the accessible name, which a tooltip alone does not reliably provide.
+      b.setAttribute('aria-label', 'Show ' + name + ' in its folder');
       b.title = 'Show ' + name + ' in its folder';
       b.addEventListener('click', () => chrome.downloads.show(d.id));
       li.appendChild(b);

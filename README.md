@@ -209,12 +209,12 @@ pwsh -File tools/make-icons.ps1
 
 ```
 npm install
-npm test              # 102 offline checks, a second or two
+npm test              # 115 offline checks, a second or two
 npm run test:browser  # 76 checks in headless Chromium, about seven minutes; needs ffprobe on the PATH
 node test/browser/shots.js   # retake the screenshots in docs/img
 ```
 
-**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, shortcut warnings, content-type verdicts, stream grouping, the PDF writer's byte offsets, and static wiring between the scripts, the manifest and the HTML.
+**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, shortcut warnings, content-type verdicts, stream grouping, the PDF writer's byte offsets, static wiring between the scripts, the manifest and the HTML, and a handful of accessibility rules (no focus ring removed without a replacement, no text under 12px, controls named for what they do).
 
 **Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. Saved bytes are read back: a rebuilt video is run through `ffprobe` for its tracks, frame count and length, and a screenshot is decoded and sampled. The streams are real ones made with ffmpeg, including split-audio, multi-rendition, MPEG-TS and Referer-guarded variants. The options page, the popup and the media list are driven the way a user would, keyboard included.
 

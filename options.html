@@ -18,7 +18,7 @@
     <section class="card">
       <label class="row switch">
         <input type="checkbox" id="enabled">
-        <span><strong>Snaffle is on</strong><em>Turn everything off without uninstalling.</em></span>
+        <span><strong>Enable Snaffle</strong><em>Untick to turn everything off without uninstalling.</em></span>
       </label>
     </section>
 
@@ -29,44 +29,44 @@
       <div class="trigger">
         <label class="row switch">
           <input type="checkbox" id="keyEnabled">
-          <span><strong>Save what is under the pointer, by key</strong></span>
+          <span><strong id="keyName">Save what is under the pointer, by key</strong></span>
         </label>
         <div class="recorder">
-          <button type="button" id="keyRec" class="rec" aria-describedby="keyHint">Alt + S</button>
-          <span class="hint" id="keyHint"></span>
+          <button type="button" id="keyRec" class="rec" aria-labelledby="keyName keyRec" aria-describedby="keyHint">Alt + S</button>
+          <span class="hint" id="keyHint" aria-live="polite"></span>
         </div>
       </div>
 
       <div class="trigger">
         <label class="row switch">
           <input type="checkbox" id="mouseEnabled">
-          <span><strong>Save what is under the pointer, by mouse</strong></span>
+          <span><strong id="mouseName">Save what is under the pointer, by mouse</strong></span>
         </label>
         <div class="recorder">
-          <button type="button" id="mouseRec" class="rec" aria-describedby="mouseHint">Alt + Middle click</button>
-          <span class="hint" id="mouseHint"></span>
+          <button type="button" id="mouseRec" class="rec" aria-labelledby="mouseName mouseRec" aria-describedby="mouseHint">Alt + Middle click</button>
+          <span class="hint" id="mouseHint" aria-live="polite"></span>
         </div>
       </div>
 
       <div class="trigger">
         <label class="row switch">
           <input type="checkbox" id="captureEnabled">
-          <span><strong>Screenshot the whole page</strong></span>
+          <span><strong id="captureName">Screenshot the whole page</strong></span>
         </label>
         <div class="recorder">
-          <button type="button" id="captureRec" class="rec" aria-describedby="captureHint">Alt + Shift + S</button>
-          <span class="hint" id="captureHint"></span>
+          <button type="button" id="captureRec" class="rec" aria-labelledby="captureName captureRec" aria-describedby="captureHint">Alt + Shift + S</button>
+          <span class="hint" id="captureHint" aria-live="polite"></span>
         </div>
       </div>
 
       <div class="trigger">
         <label class="row switch">
           <input type="checkbox" id="galleryEnabled">
-          <span><strong>List every image and video on the page</strong></span>
+          <span><strong id="galleryName">List every image and video on the page</strong></span>
         </label>
         <div class="recorder">
-          <button type="button" id="galleryRec" class="rec" aria-describedby="galleryHint">Alt + Shift + I</button>
-          <span class="hint" id="galleryHint"></span>
+          <button type="button" id="galleryRec" class="rec" aria-labelledby="galleryName galleryRec" aria-describedby="galleryHint">Alt + Shift + I</button>
+          <span class="hint" id="galleryHint" aria-live="polite"></span>
         </div>
       </div>
     </section>
