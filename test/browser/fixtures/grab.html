@@ -100,6 +100,9 @@
 
 <input id="field" style="position:absolute;left:10px;top:860px;width:200px">
 
+<!-- A text box inside a shadow root, as web components build them. -->
+<div id="shadowfield" style="position:absolute;left:230px;top:860px"></div>
+
 <script>
   const c = document.querySelector('#canvas canvas').getContext('2d');
   c.fillStyle = '#663399'; c.fillRect(0, 0, 200, 150);
@@ -108,6 +111,8 @@
   const host = document.getElementById('shadow');
   const root = host.attachShadow({ mode: 'open' });
   root.innerHTML = '<img style="width:200px;height:150px;display:block" src="/img/200x150/445566/shadowed.png">';
+
+  document.getElementById('shadowfield').attachShadow({ mode: 'open' }).innerHTML = '<input style="width:200px">';
 </script>
 </body>
 </html>

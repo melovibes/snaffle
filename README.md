@@ -84,7 +84,7 @@ If the library cannot read a stream, Snaffle falls back to joining the best rend
 
 It refuses, with a reason, when a stream is live (it has no end), or is encrypted with DRM. DRM-protected services are not defeated by this and are not meant to be.
 
-Turn the whole thing off with **Rebuild streamed video** in options, which reverts to saving the poster frame.
+Turn the whole thing off with **Rebuild streamed video into one file** in options, which reverts to saving the poster frame.
 
 ## Full-page screenshots
 
@@ -105,14 +105,40 @@ Horizontal capture is included for pages wider than the window, and can be turne
 
 ## Page media list
 
-`Alt + Shift + I`, or the popup button. Opens a panel of everything on the page, for picking and bulk downloading.
+`Alt + Shift + I`, or the popup button. Opens a dialog of everything on the page, for picking and bulk downloading.
 
-- Collects `<img>` (largest `srcset` candidate, after the full-resolution rewrites), `<video>` files and posters, CSS `background-image`, and links pointing at media files — **across all frames**, since `tabs.sendMessage` only returns one reply, each frame pushes its own list and the service worker gathers them.
-- Sorted biggest first. Filter by minimum dimension, by file type (chips built from what the page actually has), and by URL substring.
-- Dimensions come from the DOM where known and are filled in as thumbnails decode, so items whose size is not known yet are never hidden by the size filter.
-- File sizes come from the Resource Timing API — no extra network requests — so they show only for resources the browser will report, which excludes cross-origin ones without `Timing-Allow-Origin`.
-- Click cards to select, then Download. Files go through the same folder and naming templates, so `{index}` numbers a batch.
-- Escape, the × button, or the trigger again closes it.
+![The page media list with two items selected](docs/img/media-list.png)
+
+- Collects `<img>` (largest `srcset` candidate, after the full-resolution rewrites), `<video>` files and posters, CSS `background-image`, and links pointing at media files, **across all frames**.
+- A thumbnail that links to its full file is one item: the full file.
+- Previews reuse what the page has already loaded. Opening the list does not fetch every original just to draw itself.
+- Sorted biggest first. Filter by minimum size, by file type, and by address. The size filter is applied again as sizes become known, and a file whose size is not known yet is never hidden by it.
+- Click a card or press Space to select. Shift-click selects a range. Arrow keys move between cards, Ctrl+A selects everything showing, and Tab stays inside the dialog.
+- Download saves one file at a time through the same path as a single grab: best address first, fallbacks after. The count on screen is the count that really arrived. Anything that could not be saved is named with its reason and left selected.
+- Escape, the close button, a click outside, or the trigger again closes it.
+
+## Feedback
+
+![A video download in progress beside a saved image](docs/img/toasts.png)
+
+Messages appear in the bottom-right corner of the page, and more than one can be up at a time.
+
+- **A saved file** is named with the folder it went to, and has a **Show in folder** button.
+- **A video being rebuilt** keeps its own message with a progress bar and a **Cancel** button, while other grabs report beside it.
+- **A failure** says what the site did, and stays longer.
+- Hovering a message keeps it from disappearing while you read it or reach for its button.
+
+The **Confirm each saved file** setting turns off the first kind only. Problems and downloads in progress are always shown, because silence after a failed grab would look like success.
+
+## Settings and the popup
+
+![The options page, with a warning under a recorded shortcut](docs/img/options.png)
+
+Every change on the options page is saved as it is made; the pill in the corner says so. To set a trigger, click its box and press the keys or the mouse button you want. Escape cancels.
+
+A shortcut is checked as it is recorded. Snaffle says when Chrome already uses the combination (and that it will take it over on web pages), when Chrome keeps it for itself so it could never fire, when two triggers have been given the same keys, and when a mouse binding would hijack ordinary clicks.
+
+The toolbar popup has the on/off switch, the current triggers, buttons for the screenshot and the media list, the last few files saved (click one to show it in its folder), and a link to the Downloads folder. On a page Snaffle cannot work on it says so instead of offering buttons that do nothing.
 
 ## File naming
 
@@ -183,17 +209,18 @@ pwsh -File tools/make-icons.ps1
 
 ```
 npm install
-npm test              # 92 offline checks, a second or two
-npm run test:browser  # 59 checks in headless Chromium, about five minutes; needs ffprobe on the PATH
+npm test              # 102 offline checks, a second or two
+npm run test:browser  # 76 checks in headless Chromium, about seven minutes; needs ffprobe on the PATH
+node test/browser/shots.js   # retake the screenshots in docs/img
 ```
 
-**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, content-type verdicts, stream grouping, the PDF writer's byte offsets, and static wiring between the scripts, the manifest and the HTML.
+**Offline checks** cover the pure logic: URL rewriting per site, `srcset` parsing, playlist reading, file naming, config storage and migration, shortcut warnings, content-type verdicts, stream grouping, the PDF writer's byte offsets, and static wiring between the scripts, the manifest and the HTML.
 
-**Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. Saved bytes are read back: a rebuilt video is run through `ffprobe` for its tracks, frame count and length, and a screenshot is decoded and sampled. The streams are real ones made with ffmpeg, including split-audio, multi-rendition, MPEG-TS and Referer-guarded variants.
+**Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. Saved bytes are read back: a rebuilt video is run through `ffprobe` for its tracks, frame count and length, and a screenshot is decoded and sampled. The streams are real ones made with ffmpeg, including split-audio, multi-rendition, MPEG-TS and Referer-guarded variants. The options page, the popup and the media list are driven the way a user would, keyboard included.
 
 Checks for defects that are understood but not yet fixed are listed in `KNOWN_FAILING` at the top of `test/browser/run.js`, each with the phase that fixes it. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale.
 
-Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the toolbar popup itself, the file-extension correction (Chrome skips that hook when downloads are driven by the automation protocol), and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
+Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the popup as Chrome shows it from the toolbar (it is tested opened as a page and pointed at a tab), the "Show in folder" buttons actually opening a folder, the file-extension correction (Chrome skips that hook when downloads are driven by the automation protocol), and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
 
 ## Troubleshooting
 
@@ -211,7 +238,7 @@ When it recognizes your trigger, Snaffle hides `pointerdown` from the page and c
 
 1. **See whether the page is one extensions cannot touch.** `chrome://` pages, the Web Store and other extensions' pages are off limits; the popup says so when you use its buttons there.
 2. **Check the combination matches exactly.** The trigger requires those modifiers and no others — `Ctrl + Alt + Middle click` does not fire a trigger set to `Alt + Middle click`, so Chrome handles it instead.
-3. **Look for a toast.** Any toast at all — including an error — means Snaffle intercepted the click. No toast means it never ran.
+3. **Look for a message in the corner.** A warning or an error means Snaffle saw the click. If you have turned confirmations off, a successful save is silent, so check the popup's "Recently saved" list instead.
 4. **Confirm it is on.** Toolbar icon, master switch, and the per-trigger on/off state.
 
 **A video on X saves the poster image instead of the video.** Snaffle never saw the playlist, because the video has not been played yet. Let it start, then grab. The playlist is recorded the moment the player requests it.

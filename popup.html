@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Snaffle</title>
@@ -8,41 +8,46 @@
 <body>
   <div class="head">
     <h1>Snaffle</h1>
-    <label class="toggle">
-      <input type="checkbox" id="enabled">
+    <label class="toggle" title="Turn Snaffle on or off">
+      <input type="checkbox" id="enabled" aria-label="Snaffle is on">
       <span class="track"><span class="knob"></span></span>
     </label>
   </div>
 
-  <div class="triggers">
-    <div class="trig">
-      <span class="lbl">Key</span>
-      <code id="keyLabel">-</code>
-      <span class="state" id="keyState"></span>
+  <p class="note" id="note" role="status" hidden></p>
+
+  <section>
+    <h2>Save what is under the pointer</h2>
+    <div class="keys">
+      <span class="key" id="keyWrap"><code id="keyLabel">-</code></span>
+      <span class="or">or</span>
+      <span class="key" id="mouseWrap"><code id="mouseLabel">-</code></span>
     </div>
-    <div class="trig">
-      <span class="lbl">Mouse</span>
-      <code id="mouseLabel">-</code>
-      <span class="state" id="mouseState"></span>
-    </div>
-    <div class="trig">
-      <span class="lbl">Page</span>
+  </section>
+
+  <section class="acts">
+    <button type="button" id="capture">
+      <strong>Screenshot the whole page</strong>
       <code id="captureLabel">-</code>
-      <span class="state">shot</span>
-    </div>
-    <div class="trig">
-      <span class="lbl">List</span>
+    </button>
+    <button type="button" id="gallery">
+      <strong>List every image and video</strong>
       <code id="galleryLabel">-</code>
-      <span class="state">media</span>
-    </div>
+    </button>
+  </section>
+
+  <section>
+    <h2>Recently saved</h2>
+    <ul id="recent" class="recent"></ul>
+  </section>
+
+  <div class="foot">
+    <span class="dest">Saving to <code id="dest">Downloads</code></span>
+    <span class="links">
+      <button type="button" id="folder" class="link">Open folder</button>
+      <button type="button" id="open" class="link">Settings</button>
+    </span>
   </div>
-
-  <p class="dest">Saving to <code id="dest">Downloads</code></p>
-
-  <button type="button" id="capture">Capture full page</button>
-  <button type="button" id="gallery" class="ghost">List all page media</button>
-  <button type="button" id="open" class="ghost">Open settings</button>
-  <p class="note" id="note">Hover over an image or video, then use your trigger. Reload open tabs after installing.</p>
 
   <script src="shared.js"></script>
   <script src="popup.js"></script>

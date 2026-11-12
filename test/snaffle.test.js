@@ -196,6 +196,25 @@ eq('path building', S.buildPath({ name: 'pic', ext: 'jpg', host: 'example.com' }
 eq('an empty name falls back to the host', S.buildPath({ name: '', ext: 'png', host: 'example.com' }, { folder: '', template: '{name}.{ext}' }, 7),
   'example.com.png');
 
+/* --------------------------------------------------- shortcut warnings */
+
+const bind = (code, mods) => Object.assign({ code, ctrl: false, alt: false, shift: false, meta: false }, mods || {});
+const click = (button, mods) => Object.assign({ button, ctrl: false, alt: false, shift: false, meta: false }, mods || {});
+
+eq('the default shortcuts raise no warning',
+  ['key', 'captureKey', 'galleryKey'].map((k) => S.keyWarning(S.DEFAULTS[k]).text).concat(S.mouseWarning(S.DEFAULTS.mouse).text), ['', '', '', '']);
+eq('alt+d is flagged as the address bar, but allowed',
+  [/address bar/.test(S.keyWarning(bind('KeyD', { alt: true })).text), S.keyWarning(bind('KeyD', { alt: true })).blocked], [true, false]);
+eq('ctrl+t is flagged as something Chrome never passes on',
+  [/never passes it/.test(S.keyWarning(bind('KeyT', { ctrl: true })).text), S.keyWarning(bind('KeyT', { ctrl: true })).blocked], [true, true]);
+eq('a bare letter is flagged', /single keys/.test(S.keyWarning(bind('KeyS')).text), true);
+eq('a bare function key is not', S.keyWarning(bind('F8')).text, '');
+eq('plain left click is refused', S.mouseWarning(click(0)).blocked, true);
+eq('ctrl+alt+left click is flagged as split view', /split view/.test(S.mouseWarning(click(0, { ctrl: true, alt: true })).text), true);
+eq('plain right click is flagged as replacing the menu', /right-click menu/.test(S.mouseWarning(click(2)).text), true);
+eq('back button is flagged as unreliable', /may not work/.test(S.mouseWarning(click(3, { alt: true })).text), true);
+eq('shift+middle click is fine', S.mouseWarning(click(1, { shift: true })).text, '');
+
 /* ------------------------------------------------- download verdict helpers */
 
 const dl = S;

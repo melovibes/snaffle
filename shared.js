@@ -120,6 +120,73 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     return parts.join(' + ');
   }
 
+  /* ------------------------------------------------- shortcut collisions */
+
+  const signature = (t) => (t.ctrl ? 'ctrl+' : '') + (t.alt ? 'alt+' : '') + (t.shift ? 'shift+' : '') + (t.meta ? 'meta+' : '');
+
+  // Combinations Chrome acts on before a page ever hears of them. A trigger
+  // set to one of these would simply never fire.
+  const KEYS_CHROME_KEEPS = {
+    'ctrl+KeyT': 'opening a new tab', 'ctrl+KeyN': 'opening a new window', 'ctrl+KeyW': 'closing the tab',
+    'ctrl+shift+KeyT': 'reopening a closed tab', 'ctrl+shift+KeyN': 'opening an incognito window',
+    'ctrl+shift+KeyW': 'closing the window', 'ctrl+Tab': 'switching tabs', 'ctrl+shift+Tab': 'switching tabs',
+    'alt+F4': 'closing the window', 'ctrl+PageUp': 'switching tabs', 'ctrl+PageDown': 'switching tabs'
+  };
+
+  // Combinations Chrome uses, but which a page is offered first. Snaffle can
+  // take these, at the cost of the usual meaning on web pages.
+  const KEYS_CHROME_USES = {
+    'alt+KeyD': 'jumping to the address bar', 'ctrl+KeyL': 'jumping to the address bar',
+    'ctrl+KeyD': 'bookmarking the page', 'ctrl+KeyS': 'saving the page', 'ctrl+KeyP': 'printing',
+    'ctrl+KeyF': 'find in page', 'ctrl+KeyG': 'find next', 'ctrl+KeyH': 'history', 'ctrl+KeyJ': 'downloads',
+    'ctrl+KeyR': 'reloading', 'ctrl+KeyU': 'viewing page source', 'ctrl+KeyO': 'opening a file',
+    'ctrl+KeyA': 'select all', 'ctrl+KeyC': 'copy', 'ctrl+KeyV': 'paste', 'ctrl+KeyX': 'cut',
+    'ctrl+KeyZ': 'undo', 'ctrl+KeyY': 'redo', 'ctrl+KeyK': 'searching', 'ctrl+KeyE': 'searching',
+    'ctrl+shift+KeyI': 'developer tools', 'ctrl+shift+KeyJ': 'developer tools', 'ctrl+shift+KeyC': 'developer tools',
+    'ctrl+shift+Delete': 'clearing browsing data', 'ctrl+shift+KeyB': 'the bookmarks bar',
+    'alt+ArrowLeft': 'going back', 'alt+ArrowRight': 'going forward', 'alt+Home': 'the home page',
+    'alt+KeyE': 'the Chrome menu', 'alt+KeyF': 'the Chrome menu',
+    'F5': 'reloading', 'F11': 'full screen', 'F12': 'developer tools', 'F3': 'find next', 'F1': 'help',
+    'ctrl+Equal': 'zooming', 'ctrl+Minus': 'zooming', 'ctrl+Digit0': 'resetting zoom'
+  };
+
+  // What the user should know about a keyboard binding, or '' if nothing.
+  // `blocked` means the binding cannot work at all.
+  function keyWarning(t) {
+    if (!t || !t.code) return { text: '', blocked: false };
+    const sig = signature(t) + t.code;
+    if (KEYS_CHROME_KEEPS[sig]) {
+      return { text: 'Chrome keeps this for ' + KEYS_CHROME_KEEPS[sig] + ' and never passes it to a page, so it will not work.', blocked: true };
+    }
+    if (KEYS_CHROME_USES[sig]) {
+      return { text: 'Chrome uses this for ' + KEYS_CHROME_USES[sig] + '. Snaffle will take it over on web pages.', blocked: false };
+    }
+    if (!signature(t) && /^(Key[A-Z]|Digit\d|Space|Enter|Backspace|Tab|Arrow.+)$/.test(t.code)) {
+      return { text: 'With no Ctrl, Alt or Shift this fires whenever you press the key outside a text box, and many sites use single keys themselves.', blocked: false };
+    }
+    return { text: '', blocked: false };
+  }
+
+  function mouseWarning(t) {
+    if (!t) return { text: '', blocked: false };
+    const sig = signature(t);
+    if (t.button === 3 || t.button === 4) {
+      return { text: 'Back and Forward buttons make the browser navigate before a page can stop it, so this may not work.', blocked: false };
+    }
+    if (!sig && t.button === 0) return { text: 'A plain left click would fire on every click you make. Hold a modifier key.', blocked: true };
+    if (!sig && t.button === 2) return { text: 'This replaces the right-click menu on every page.', blocked: false };
+    if (!sig && t.button === 1) return { text: 'Middle click will stop opening links in new tabs.', blocked: false };
+    if (t.button === 0) {
+      const uses = {
+        'ctrl+alt+': 'opening a link in split view', 'alt+': 'downloading a link',
+        'ctrl+': 'opening a link in a new tab', 'shift+': 'opening a link in a new window',
+        'ctrl+shift+': 'opening a link in a new tab'
+      }[sig];
+      if (uses) return { text: 'Chrome uses this for ' + uses + '. Snaffle will take it over on web pages.', blocked: false };
+    }
+    return { text: '', blocked: false };
+  }
+
   /* ----------------------------------------------------------- file names */
 
   const pad = (n) => String(n).padStart(2, '0');
@@ -197,7 +264,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
   return {
     CFG_VERSION, DEFAULTS, LEGACY_DEFAULTS,
     merge, overridesOf, effective, toStore,
-    BUTTONS, keyLabel, mouseLabel,
+    BUTTONS, keyLabel, mouseLabel, keyWarning, mouseWarning,
     sanitizeSegment, applyTemplate, buildPath,
     MIME_EXT, cleanMime, notMedia, nameForMime, sizeText
   };

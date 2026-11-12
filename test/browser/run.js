@@ -21,11 +21,7 @@ const KNOWN_FAILING = {
   C02: 'phase 4: capture trusts devicePixelRatio instead of measuring the shot',
   C03: 'phase 4: fixed elements are hidden before the first shot',
   C04: 'phase 4: inner scrolling containers are not detected',
-  C05: 'phase 4: no check that the tab is still in front',
-  L02: 'phase 4: thumbnails load the full-size originals',
-  L05: 'phase 4: size filter is not re-applied when dimensions arrive',
-  L06: 'phase 3: media list has no keyboard access',
-  P02: 'phase 3: recorded shortcut is not saved until Save is pressed'
+  C05: 'phase 4: no check that the tab is still in front'
 };
 
 const only = process.argv[2] || '';
@@ -63,8 +59,7 @@ const base = (u) => {
 
   const clearToast = (target) => target.evaluate(() => {
     const host = document.getElementById('__snaffle_ui');
-    const t = host && host.shadowRoot && host.shadowRoot.querySelector('.toast');
-    if (t) t.textContent = '';
+    if (host && host.shadowRoot) host.shadowRoot.querySelectorAll('.toast').forEach((t) => t.remove());
   }).catch(() => {});
 
   // What a run of the extension left behind, observed three ways.
@@ -221,6 +216,15 @@ const base = (u) => {
       return { ok: !r.api.length, observed: describe(r) };
     });
 
+    await check('grab', 'G30', null, 'Typing in a text box inside a shadow root also counts as typing', async () => {
+      const r = await grab(page, '#plain img', {
+        settle: 1500,
+        beforeTrigger: async () => { await page.evaluate(() => document.getElementById('shadowfield').shadowRoot.querySelector('input').focus()); }
+      });
+      await page.evaluate(() => document.getElementById('shadowfield').shadowRoot.querySelector('input').blur());
+      return { ok: !r.api.length, observed: describe(r) };
+    });
+
     await check('grab', 'G26', null, 'Master switch off disables the trigger', async () => {
       await h.setCfg({ enabled: false });
       const r = await grab(page, '#plain img', { settle: 1500 });
@@ -238,6 +242,34 @@ const base = (u) => {
       const toast = await h.settledToast(page, 2500);
       const out = await outcome(h, page, marks, 600);
       return { ok: !out.api.length && /No image or video/.test(toast), observed: 'toast "' + toast + '"; downloads ' + out.api.length };
+    });
+
+    await check('grab', 'G28', null, 'A saved file is confirmed with a button to show it in its folder', async () => {
+      const r = await grab(page, '#plain img', { after: 200 });
+      const t = await h.toast(page);
+      // The toast must take clicks; the area around it must not.
+      const hits = await page.evaluate(() => {
+        const root = document.getElementById('__snaffle_ui').shadowRoot;
+        return { toast: getComputedStyle(root.querySelector('.toast')).pointerEvents, list: getComputedStyle(root.querySelector('.toasts')).pointerEvents };
+      });
+      const pressed = await page.evaluate(() => {
+        const b = document.getElementById('__snaffle_ui').shadowRoot.querySelector('.acts button');
+        if (b) b.click();
+        return !!b;
+      });
+      await sleep(400);
+      const gone = !(await h.toast(page));
+      const ok = /^Saved/.test(r.toast) && !!t && t.actions.join() === 'Show in folder' && hits.toast === 'auto' && hits.list === 'none' && pressed && gone;
+      return { ok, observed: 'toast "' + r.toast + '" with buttons [' + (t ? t.actions.join(', ') : '') + ']; clickable: toast ' + hits.toast + ', surrounding area ' + hits.list + '; pressing the button dismissed it: ' + gone };
+    });
+
+    await check('grab', 'G29', null, 'With confirmations turned off, a saved file is silent but a failure is still shown', async () => {
+      await h.setCfg({ toast: false });
+      const good = await grab(page, '#plain img', { settle: 1800 });
+      const bad = await grab(page, '#xprotected img', { after: 2500 });
+      await h.setCfg({ toast: true });
+      const ok = gotFile(good, 'plain.png') && !good.toast && /Could not save/.test(bad.toast || bad.finalToast);
+      return { ok, observed: 'saved image: file arrived, toast "' + (good.toast || '(none)') + '"; failed image: toast "' + (bad.toast || bad.finalToast) + '"' };
     });
 
     const scroll = await h.newPage(A.origin + '/pages/scroll.html');
@@ -413,10 +445,47 @@ const base = (u) => {
       await slow.keyboard.press('Alt+KeyS');
       await sleep(1200);
       await slow.keyboard.press('Escape');
-      await sleep(4000);
-      const t = await h.toast(slow);
+      const said = await h.settledToast(slow, 5000);
+      await sleep(2500);
       const files = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
-      return { ok: files === 0 && /Cancelled/.test(t ? t.text : ''), observed: 'toast "' + (t ? t.text : '') + '"; downloads ' + files };
+      return { ok: files === 0 && /Cancelled/.test(said), observed: 'toast "' + said + '"; downloads ' + files };
+    });
+
+    await check('stream', 'S15', null, 'A running download shows a progress bar and a Cancel button that stops it', async () => {
+      const marks = await mark(h);
+      await clearToast(slow);
+      await h.hover(slow, '#v');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(1500);
+      const during = await h.toast(slow);
+      // Press the toast's own button, the way a user would.
+      const pressed = await slow.evaluate(() => {
+        const root = document.getElementById('__snaffle_ui').shadowRoot;
+        const b = Array.from(root.querySelectorAll('.acts button')).find((x) => x.textContent === 'Cancel');
+        if (b) b.click();
+        return !!b;
+      });
+      const said = await h.settledToast(slow, 5000);
+      await sleep(2500);
+      const files = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
+      const ok = pressed && during && during.progress != null && /busy/.test(during.cls) && /Cancelled/.test(said) && files === 0;
+      return { ok, observed: 'while running: "' + (during ? during.text : '') + '", bar at ' + (during ? during.progress : 'none') + ', buttons [' + (during ? during.actions.join(', ') : '') + ']; after Cancel: "' + said + '"; downloads ' + files };
+    });
+
+    await check('stream', 'S16', null, 'An image saved during a video download gets its own toast beside the progress one', async () => {
+      await clearToast(slow);
+      await h.hover(slow, '#v');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(900);
+      await h.hover(slow, '#pic');
+      await slow.keyboard.press('Alt+KeyS');
+      await sleep(1200);
+      const t = await h.toast(slow);
+      const all = t ? t.all : [];
+      await slow.keyboard.press('Escape');
+      await h.settledToast(slow, 5000);
+      const both = all.some((x) => /^(Reading|Downloading)/.test(x)) && all.some((x) => /^Saved .*beside\.png/.test(x));
+      return { ok: both && all.length === 2, observed: all.length + ' toasts on screen: ' + JSON.stringify(all) };
     });
 
     await check('stream', 'S14', 10, 'A video download carries on after its tab navigates away', async () => {
@@ -567,47 +636,110 @@ const base = (u) => {
     await sleep(900);
     await page.mouse.move(600, 500);
 
-    const cards = () => page.evaluate(() => {
+    // The cards a user can see, and where keyboard focus is.
+    const panel = () => page.evaluate(() => {
       const host = document.getElementById('__snaffle_gallery');
       if (!host || !host.shadowRoot) return null;
-      return Array.from(host.shadowRoot.querySelectorAll('.card')).map((c) => ({
-        url: c.dataset.url, dims: (c.querySelector('.dims') || {}).textContent || '',
-        selected: c.getAttribute('aria-selected'), tabindex: c.getAttribute('tabindex'), role: c.getAttribute('role')
-      }));
+      const r = host.shadowRoot;
+      const active = r.activeElement;
+      return {
+        cards: Array.from(r.querySelectorAll('.card')).filter((c) => !c.hidden).map((c) => ({
+          url: c.dataset.url, dims: (c.querySelector('.dims') || {}).textContent || '',
+          selected: c.getAttribute('aria-selected') === 'true', tabindex: c.getAttribute('tabindex'),
+          role: c.getAttribute('role'), state: c.classList.contains('done') ? 'done' : c.classList.contains('failed') ? 'failed' : ''
+        })),
+        focus: active ? (active.classList.contains('card') ? 'card:' + active.dataset.url.split('/').pop() : active.tagName.toLowerCase() + (active.dataset.act ? ':' + active.dataset.act : '')) : 'none',
+        status: r.querySelector('footer').textContent,
+        button: r.querySelector('[data-act="dl"]').textContent,
+        dialog: r.querySelector('.wrap').getAttribute('role') + '/' + r.querySelector('.wrap').getAttribute('aria-modal'),
+        shade: !!r.querySelector('.shade')
+      };
     });
-    const names = (list) => list.map((c) => base(c.url));
+    const names = (cards) => cards.map((c) => base(c.url));
 
     const markA = A.mark();
     await page.keyboard.press('Alt+Shift+KeyI');
     await sleep(2500);
-    const list = await cards();
+    const first = await panel();
 
-    await check('list', 'L01', null, 'The panel opens and lists the page images, including one inside a cross-origin iframe', async () => {
-      if (!list) return { ok: false, observed: 'panel did not open; toast "' + ((await h.toast(page)) || {}).text + '"' };
-      const n = names(list);
-      const ok = ['one.png', 'two-large.png', 'three-full.png', 'bigbg.png', 'framed.png'].every((f) => n.includes(f));
-      return { ok, observed: list.length + ' items: ' + n.join(', ') };
+    await check('list', 'L01', null, 'The panel opens as a dialog and lists the page images, including one inside a cross-origin iframe', async () => {
+      if (!first) return { ok: false, observed: 'panel did not open; toast "' + ((await h.toast(page)) || {}).text + '"' };
+      const n = names(first.cards);
+      const ok = ['one.png', 'two-large.png', 'three-full.png', 'bigbg.png', 'framed.png'].every((f) => n.includes(f)) &&
+                 first.dialog === 'dialog/true' && first.shade;
+      return { ok, observed: first.cards.length + ' items: ' + n.join(', ') + '; ' + first.dialog + ', page dimmed: ' + first.shade };
+    });
+
+    await check('list', 'L04', null, 'A thumbnail that links to its full file is listed once, as the full file', async () => {
+      const n = names(first ? first.cards : []);
+      return { ok: n.includes('three-full.png') && !n.includes('three-thumb.png'), observed: 'three-full.png ' + (n.includes('three-full.png') ? 'listed' : 'missing') + ', three-thumb.png ' + (n.includes('three-thumb.png') ? 'also listed' : 'not listed separately') };
     });
 
     await check('list', 'L02', 16, 'Opening the panel does not fetch full-size originals just to draw thumbnails', async () => {
       const big = A.since(markA).map((r) => r.path.split('/').pop()).filter((f) => /two-large|three-full/.test(f));
-      return { ok: big.length === 0, observed: big.length ? 'fetched for thumbnails: ' + big.join(', ') + ' (the page itself had only loaded 200x150 versions)' : 'no full-size fetches' };
+      return { ok: big.length === 0, observed: big.length ? 'fetched for thumbnails: ' + big.join(', ') : 'no full-size fetches; previews reuse what the page had loaded' };
     });
 
     await check('list', 'L05', 18, 'A 10x10 background image is hidden by the 80px minimum once its size is known', async () => {
-      const tiny = (list || []).find((c) => /tinybg/.test(c.url));
-      return { ok: !tiny, observed: tiny ? 'tinybg.png still listed, showing "' + tiny.dims + '"' : 'not listed' };
+      const tiny = (first ? first.cards : []).find((c) => /tinybg/.test(c.url));
+      return { ok: !tiny, observed: tiny ? 'tinybg.png still showing, "' + tiny.dims + '"' : 'not showing' };
     });
 
-    await check('list', 'L06', null, 'Cards are reachable and selectable from the keyboard', async () => {
-      const c = (list || [])[0] || {};
-      return { ok: c.tabindex != null, observed: 'card tabindex=' + c.tabindex + ', role=' + c.role };
+    await check('list', 'L06', null, 'Cards can be reached, moved between and selected from the keyboard', async () => {
+      const start = first ? first.focus : 'none';
+      await page.keyboard.press('ArrowRight');
+      const moved = (await panel()).focus;
+      await page.keyboard.press('Space');
+      const after = await panel();
+      const picked = after.cards.filter((c) => c.selected).map((c) => base(c.url));
+      await page.keyboard.press('Space');
+      const cleared = (await panel()).cards.filter((c) => c.selected).length;
+      const ok = /^card:/.test(start) && /^card:/.test(moved) && moved !== start && picked.length === 1 && 'card:' + picked[0] === moved && cleared === 0;
+      return { ok, observed: 'focus opens on ' + start + '; Right arrow moves to ' + moved + '; Space selects [' + picked.join(', ') + ']; Space again leaves ' + cleared + ' selected' };
     });
 
-    await check('list', 'L03', 17, 'Select all + Download saves every selected item and reports the true count', async () => {
+    await check('list', 'L08', null, 'Tab stays inside the dialog', async () => {
+      const seen = [];
+      for (let i = 0; i < 14; i++) { await page.keyboard.press('Tab'); seen.push((await panel()).focus); }
+      const outside = await page.evaluate(() => document.activeElement && document.activeElement.id !== '__snaffle_gallery' && document.activeElement !== document.body ? document.activeElement.tagName : '');
+      const stops = Array.from(new Set(seen));
+      return { ok: !seen.includes('none') && !outside && stops.length >= 5 && seen.filter((x) => x === stops[0]).length >= 2, observed: stops.length + ' stops, cycling: ' + stops.join(' > ') + (outside ? '; ESCAPED to ' + outside : '') };
+    });
+
+    await check('list', 'L09', null, 'Shift-click selects the range between two cards', async () => {
+      const boxes = await page.evaluate(() => {
+        const r = document.getElementById('__snaffle_gallery').shadowRoot;
+        return Array.from(r.querySelectorAll('.card')).filter((c) => !c.hidden).map((c) => { const b = c.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; });
+      });
+      await page.mouse.click(boxes[0].x, boxes[0].y);
+      await page.keyboard.down('Shift');
+      await page.mouse.click(boxes[3].x, boxes[3].y);
+      await page.keyboard.up('Shift');
+      const p = await panel();
+      const n = p.cards.filter((c) => c.selected).length;
+      await page.evaluate(() => document.getElementById('__snaffle_gallery').shadowRoot.querySelector('[data-act="none"]').click());
+      return { ok: n === 4 && /Download 4/.test(p.button), observed: n + ' selected after clicking card 1 then shift-clicking card 4; button reads "' + p.button + '"' };
+    });
+
+    await check('list', 'L10', null, 'Typing in the filter keeps the same cards rather than rebuilding them', async () => {
+      await page.evaluate(() => { window.__firstCard = document.getElementById('__snaffle_gallery').shadowRoot.querySelector('.card'); });
+      await page.evaluate(() => {
+        const input = document.getElementById('__snaffle_gallery').shadowRoot.querySelector('input[type=search]');
+        input.value = 'bigbg'; input.dispatchEvent(new Event('input'));
+      });
+      const narrowed = (await panel()).cards.length;
+      const same = await page.evaluate(() => {
+        const r = document.getElementById('__snaffle_gallery').shadowRoot;
+        const input = r.querySelector('input[type=search]');
+        input.value = ''; input.dispatchEvent(new Event('input'));
+        return r.querySelector('.card') === window.__firstCard;
+      });
+      const back = (await panel()).cards.length;
+      return { ok: narrowed === 1 && same && back === first.cards.length, observed: 'filter "bigbg" shows ' + narrowed + ' card; cleared shows ' + back + '; first card is the same element: ' + same };
+    });
+
+    await check('list', 'L03', 17, 'Select all + Download saves every selected item, reports the true count, and stays open', async () => {
       const marks = await mark(h);
-      // Count what Select all really selected, not how many cards are drawn:
-      // a stale card can be on screen without being selectable (see L05).
       const count = await page.evaluate(() => {
         const r = document.getElementById('__snaffle_gallery').shadowRoot;
         r.querySelector('[data-act="all"]').click();
@@ -615,14 +747,51 @@ const base = (u) => {
         r.querySelector('[data-act="dl"]').click();
         return n;
       });
-      await sleep(4500);
+      const end = Date.now() + 30000;
+      let p = await panel();
+      while (Date.now() < end && p && !/^Saved \d+ file/.test(p.status)) { await sleep(300); p = await panel(); }
       const api = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id));
       const done = api.filter((d) => d.state === 'complete').length;
-      const toast = await h.toast(page);
-      const claimed = parseInt((/Saved (\d+)/.exec(toast ? toast.text : '') || [])[1] || '-1', 10);
-      return { ok: done === count && claimed === done, observed: count + ' selected, ' + api.length + ' started [' + api.map((d) => base(d.url)).join(', ') + '], ' + done + ' completed; toast "' + (toast ? toast.text : '') + '"' };
+      const claimed = parseInt((/Saved (\d+)/.exec(p ? p.status : '') || [])[1] || '-1', 10);
+      const marked = p ? p.cards.filter((c) => c.state === 'done').length : 0;
+      return { ok: !!p && done === count && claimed === count && marked === count, observed: count + ' selected, ' + done + ' completed [' + api.filter((d) => d.state === 'complete').map((d) => base(d.url)).join(', ') + ']; panel says "' + (p ? p.status : 'closed') + '"; ' + marked + ' cards marked saved' };
+    });
+
+    await check('list', 'L07', null, 'Escape closes the panel and gives focus back to the page', async () => {
+      await page.keyboard.press('Escape');
+      await sleep(300);
+      const gone = await page.evaluate(() => !document.getElementById('__snaffle_gallery'));
+      return { ok: gone, observed: gone ? 'closed' : 'still open' };
     });
     await page.close();
+
+    // A page where one of the listed files cannot be fetched at all.
+    const bad = await h.newPage(A.origin + '/pages/grab.html');
+    await sleep(700);
+    await bad.mouse.move(900, 600);
+    await check('list', 'L11', null, 'A file that cannot be saved is named, counted, and left selected', async () => {
+      await bad.keyboard.press('Alt+Shift+KeyI');
+      await sleep(2500);
+      const picked = await bad.evaluate(() => {
+        const r = document.getElementById('__snaffle_gallery').shadowRoot;
+        const want = Array.from(r.querySelectorAll('.card')).filter((c) => /plain\.png|far\.png/.test(c.dataset.url));
+        want.forEach((c) => c.click());
+        r.querySelector('[data-act="dl"]').click();
+        return want.length;
+      });
+      const read = () => bad.evaluate(() => {
+        const host = document.getElementById('__snaffle_gallery');
+        if (!host) return null;
+        const r = host.shadowRoot;
+        return { status: r.querySelector('footer').textContent, warn: r.querySelector('footer').className, selected: Array.from(r.querySelectorAll('.card[aria-selected="true"]')).map((c) => c.dataset.url.split('/').pop()) };
+      });
+      const end = Date.now() + 30000;
+      let p = await read();
+      while (Date.now() < end && p && !/^Saved \d+ file/.test(p.status)) { await sleep(300); p = await read(); }
+      const ok = picked === 2 && !!p && /^Saved 1 file\. Could not save 1: far/.test(p.status) && p.selected.join() === 'far.png' && p.warn === 'warn';
+      return { ok, observed: 'picked ' + picked + '; panel says "' + (p ? p.status : 'closed') + '"; still selected: [' + (p ? p.selected.join(', ') : '') + ']' };
+    });
+    await bad.close();
   }
 
   /* ================================================================== ui */
@@ -635,35 +804,39 @@ const base = (u) => {
     await opt.goto('chrome-extension://' + h.extId + '/options.html');
     await sleep(500);
 
+    const text = (id) => opt.evaluate((x) => document.getElementById(x).textContent, id);
+    const hint = (id) => opt.evaluate((x) => { const e = document.getElementById(x); return { text: e.textContent, cls: e.className }; }, id);
+    const stored = async () => (await h.getCfg()) || {};
+    const record = async (id, combo) => { await opt.click('#' + id); await opt.keyboard.press(combo); await sleep(250); };
+    const reset = async () => { await opt.click('#reset'); await opt.click('#reset'); await sleep(300); };
+
+    await check('ui', 'P05', 20, 'Defaults are not written into storage at install', async () => {
+      const keys = Object.keys(await stored());
+      return { ok: keys.length === 0, observed: 'storage holds ' + keys.length + ' keys right after install' + (keys.length ? ' (' + keys.slice(0, 5).join(', ') + ')' : '') };
+    });
+
     await check('ui', 'P01', null, 'Options page loads cleanly with every control populated', async () => {
       const v = await opt.evaluate(() => ({
         key: document.getElementById('keyRec').textContent, mouse: document.getElementById('mouseRec').textContent,
         cap: document.getElementById('captureRec').textContent, gal: document.getElementById('galleryRec').textContent,
         folder: document.getElementById('folder').value, fmt: document.getElementById('captureFormat').value,
-        preview: document.getElementById('preview').textContent
+        preview: document.getElementById('preview').textContent, status: document.getElementById('status').textContent,
+        saveButton: !!document.getElementById('save')
       }));
-      return { ok: !errors.length && v.key === 'Alt + S' && !!v.preview.trim(), observed: JSON.stringify(v) + (errors.length ? '; errors: ' + errors.join(' | ') : '; no console errors') };
+      return { ok: !errors.length && v.key === 'Alt + S' && v.preview === 'Downloads/Snaffle/example.com/sunset-over-the-bay.jpg' && !v.saveButton, observed: JSON.stringify(v) + (errors.length ? '; errors: ' + errors.join(' | ') : '; no console errors') };
     });
 
-    await check('ui', 'P02', null, 'A recorded shortcut is either saved or clearly marked as unsaved', async () => {
-      await opt.click('#keyRec');
-      await opt.keyboard.press('Control+Shift+KeyK');
-      await sleep(200);
-      const shown = await opt.evaluate(() => document.getElementById('keyRec').textContent);
-      const stored = ((await h.getCfg()) || {}).key || { code: '(nothing stored)' };
-      const marker = await opt.evaluate(() => /unsaved|not saved/i.test(document.body.innerText));
-      const persisted = stored.code === 'KeyK';
+    await check('ui', 'P02', null, 'A recorded shortcut is saved the moment it is recorded', async () => {
+      await record('keyRec', 'Control+Shift+KeyK');
+      const shown = await text('keyRec');
+      const key = (await stored()).key || {};
+      const status = await text('status');
       await opt.reload(); await sleep(400);
-      const afterReload = await opt.evaluate(() => document.getElementById('keyRec').textContent);
-      return { ok: persisted || marker, observed: 'box shows "' + shown + '", storage has ' + stored.code + ', no unsaved marker; after reload the box reads "' + afterReload + '"' };
+      const afterReload = await text('keyRec');
+      return { ok: key.code === 'KeyK' && key.ctrl === true && afterReload === 'Ctrl + Shift + K', observed: 'box shows "' + shown + '", storage has ' + (key.code || 'nothing') + ', status "' + status + '"; after reload the box reads "' + afterReload + '"' };
     });
 
-    await check('ui', 'P03', null, 'Save persists a recorded shortcut and the page honours it', async () => {
-      await opt.click('#keyRec');
-      await opt.keyboard.press('Control+Shift+KeyK');
-      await opt.click('#save');
-      await sleep(300);
-      const stored = (await h.getCfg()).key;
+    await check('ui', 'P03', null, 'An open page honours the new shortcut straight away', async () => {
       const page = await h.newPage(A.origin + '/pages/grab.html');
       await sleep(400);
       const marks = await mark(h);
@@ -671,38 +844,132 @@ const base = (u) => {
       await page.keyboard.press('Control+Shift+KeyK');
       await sleep(1500);
       const got = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
+      await page.keyboard.press('Alt+KeyS');
+      await sleep(1000);
+      const old = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length - got;
       await page.close();
-      await opt.click('#reset'); await sleep(300);
-      return { ok: stored.code === 'KeyK' && stored.ctrl && got === 1, observed: 'stored ' + JSON.stringify({ code: stored.code, ctrl: stored.ctrl, shift: stored.shift, alt: stored.alt }) + '; new shortcut produced ' + got + ' download' };
+      return { ok: got === 1 && old === 0, observed: 'new shortcut made ' + got + ' download; the old one made ' + old };
     });
 
-    await check('ui', 'P05', 20, 'Defaults are not written into storage at install', async () => {
-      const keys = Object.keys((await h.getCfg()) || {});
-      return { ok: keys.length === 0, observed: 'storage holds ' + keys.length + ' keys right after install' + (keys.length ? ' (' + keys.slice(0, 5).join(', ') + ')' : '') };
-    });
-
-    await check('ui', 'P06', 20, 'Saving stores only what was changed, and an old full config is slimmed to the same', async () => {
-      await opt.click('#keyRec');
-      await opt.keyboard.press('Control+Shift+KeyK');
-      await opt.click('#save');
+    await check('ui', 'P06', 20, 'Only what was changed is stored, and Reset needs a second press', async () => {
+      const saved = Object.keys(await stored()).sort().join(',');
+      await opt.click('#reset');
+      await sleep(200);
+      const armed = await text('reset');
+      const stillThere = Object.keys(await stored()).length;
+      await opt.click('#reset');
       await sleep(300);
-      const saved = Object.keys((await h.getCfg()) || {}).sort().join(',');
-      await opt.click('#reset'); await sleep(300);
-      const afterReset = await h.getCfg();
-      return { ok: saved === 'key,v' && afterReset === undefined, observed: 'after changing one shortcut storage holds [' + saved + ']; after Reset it holds ' + (afterReset === undefined ? 'nothing' : JSON.stringify(afterReset)) };
+      const after = await h.getCfg();
+      const label = await text('keyRec');
+      return { ok: saved === 'key,v' && /again/i.test(armed) && stillThere > 0 && after === undefined && label === 'Alt + S', observed: 'storage held [' + saved + ']; first press says "' + armed + '" and keeps it; second press leaves ' + (after === undefined ? 'nothing stored' : JSON.stringify(after)) + ', box back to "' + label + '"' };
     });
 
-    await check('ui', 'P04', null, 'Popup loads cleanly', async () => {
+    await check('ui', 'P07', null, 'The quality box is only shown when the format has a quality', async () => {
+      const png = await opt.evaluate(() => document.getElementById('qualityRow').hidden);
+      await opt.selectOption('#captureFormat', 'jpeg');
+      await sleep(250);
+      const jpeg = await opt.evaluate(() => document.getElementById('qualityRow').hidden);
+      const fmt = (await stored()).captureFormat;
+      await reset();
+      return { ok: png === true && jpeg === false && fmt === 'jpeg', observed: 'hidden for PNG: ' + png + '; hidden for JPEG: ' + jpeg + '; stored format: ' + fmt };
+    });
+
+    await check('ui', 'P08', null, 'Shortcuts Chrome uses, keeps, or that clash are flagged as they are recorded', async () => {
+      await record('keyRec', 'Alt+KeyD');
+      const uses = await hint('keyHint');
+      await record('keyRec', 'Control+KeyT');
+      const keeps = await hint('keyHint');
+      await record('keyRec', 'Alt+Shift+KeyS');   // the screenshot trigger's default
+      const clash = await hint('keyHint');
+      await record('keyRec', 'Alt+KeyG');
+      const fine = await hint('keyHint');
+      await reset();
+      const ok = /address bar/.test(uses.text) && /warn/.test(uses.cls) && /never passes it/.test(keeps.text) && /bad/.test(keeps.cls) &&
+                 /Another trigger/.test(clash.text) && /bad/.test(clash.cls) && fine.text === '';
+      return { ok, observed: 'Alt+D: "' + uses.text + '" | Ctrl+T: "' + keeps.text + '" | same as screenshot: "' + clash.text + '" | Alt+G: "' + fine.text + '"' };
+    });
+
+    await check('ui', 'P09', null, 'The mouse recorder can be cancelled with Escape, and records a click with modifiers', async () => {
+      await opt.click('#mouseRec');
+      const armed = await text('mouseRec');
+      await opt.keyboard.press('Escape');
+      await sleep(150);
+      const cancelled = await text('mouseRec');
+      const untouched = (await stored()).mouse === undefined;
+
+      await opt.click('#mouseRec');
+      const box = await opt.locator('#mouseRec').boundingBox();
+      await opt.keyboard.down('Shift');
+      await opt.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: 'right' });
+      await opt.keyboard.up('Shift');
+      await sleep(300);
+      const recorded = await text('mouseRec');
+      const m = (await stored()).mouse || {};
+      const rearmed = await opt.evaluate(() => document.getElementById('mouseRec').classList.contains('listening'));
+      await reset();
+      return { ok: /Click here/.test(armed) && cancelled === 'Alt + Middle click' && untouched && recorded === 'Shift + Right click' && m.button === 2 && m.shift === true && !rearmed, observed: 'armed: "' + armed + '"; after Escape: "' + cancelled + '" (nothing stored: ' + untouched + '); after Shift+right click: "' + recorded + '", stored button ' + m.button + '; left listening: ' + rearmed };
+    });
+
+    await check('ui', 'P10', null, 'Typing a folder updates the preview at once and saves after a pause', async () => {
+      await opt.fill('#folder', 'Pictures/{host}');
+      const preview = await text('preview');
+      const early = (await stored()).folder;
+      await sleep(700);
+      const late = (await stored()).folder;
+      const status = await text('status');
+      await reset();
+      return { ok: preview === 'Downloads/Pictures/example.com/sunset-over-the-bay.jpg' && late === 'Pictures/{host}' && status === 'All changes saved', observed: 'preview "' + preview + '"; stored straight away: ' + (early || 'not yet') + '; after a pause: ' + late + '; status "' + status + '"' };
+    });
+    await opt.close();
+
+    await check('ui', 'P04', null, 'Popup loads cleanly, names its triggers, and lists what was saved', async () => {
       const pop = await h.context.newPage();
       const errs = [];
       pop.on('pageerror', (e) => errs.push(String(e)));
       await pop.goto('chrome-extension://' + h.extId + '/popup.html');
-      await sleep(400);
-      const v = await pop.evaluate(() => ({ key: document.getElementById('keyLabel').textContent, cap: document.getElementById('captureLabel').textContent, dest: document.getElementById('dest').textContent }));
+      await sleep(700);
+      const v = await pop.evaluate(() => ({
+        key: document.getElementById('keyLabel').textContent, mouse: document.getElementById('mouseLabel').textContent,
+        cap: document.getElementById('captureLabel').textContent, gal: document.getElementById('galleryLabel').textContent,
+        dest: document.getElementById('dest').textContent,
+        recent: document.querySelectorAll('#recent .file').length
+      }));
       await pop.close();
-      return { ok: !errs.length && v.key === 'Alt + S', observed: JSON.stringify(v) + (errs.length ? '; errors ' + errs.join('|') : '; no errors') };
+      const ok = !errs.length && v.key === 'Alt + S' && v.mouse === 'Alt + Middle click' && v.cap === 'Alt + Shift + S' && v.dest === 'Downloads/Snaffle/{host}' && v.recent >= 1;
+      return { ok, observed: JSON.stringify(v) + (errs.length ? '; errors ' + errs.join('|') : '; no errors') };
     });
-    await opt.close();
+
+    await check('ui', 'P12', null, 'The popup\'s button opens the media list in the tab it was opened over', async () => {
+      const page = await h.newPage(A.origin + '/pages/gallery.html');
+      await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 8000 });
+      const tabId = await h.probe.evaluate(async () => {
+        const t = (await chrome.tabs.query({})).find((x) => /gallery\.html/.test(x.url || ''));
+        return t ? t.id : null;
+      });
+      const pop = await h.context.newPage();
+      await pop.goto('chrome-extension://' + h.extId + '/popup.html?tab=' + tabId);
+      await sleep(800);
+      const before = await pop.evaluate(() => ({ note: document.getElementById('note').hidden, disabled: document.getElementById('gallery').disabled }));
+      await pop.click('#gallery');
+      await sleep(2200);
+      const open = await page.evaluate(() => !!document.getElementById('__snaffle_gallery'));
+      await pop.close(); await page.close();
+      return { ok: before.note && !before.disabled && open, observed: 'no warning shown: ' + before.note + '; button enabled: ' + !before.disabled + '; list opened in the page: ' + open };
+    });
+
+    // Opened as a tab, the popup's "current page" is an extension page: one
+    // of the places Snaffle cannot run.
+    await check('ui', 'P11', null, 'On a page it cannot work on, the popup says so and disables its page actions', async () => {
+      const pop = await h.context.newPage();
+      await pop.goto('chrome-extension://' + h.extId + '/popup.html');
+      await sleep(900);
+      const v = await pop.evaluate(() => ({
+        note: document.getElementById('note').hidden ? '' : document.getElementById('note').textContent,
+        capture: document.getElementById('capture').disabled, gallery: document.getElementById('gallery').disabled
+      }));
+      await pop.close();
+      return { ok: /cannot run on this page/i.test(v.note) && v.capture && v.gallery, observed: 'note "' + v.note + '"; buttons disabled: ' + v.capture + ', ' + v.gallery };
+    });
   }
 
   /* ============================================================ lifecycle */

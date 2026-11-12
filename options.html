@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <title>Snaffle options</title>
@@ -8,55 +8,115 @@
 <body>
   <div class="wrap">
     <header>
-      <h1>Snaffle</h1>
-      <p class="sub">Hover over any image or video, then press your key or click your button to save it.</p>
+      <div>
+        <h1>Snaffle</h1>
+        <p class="sub">Point at an image or video and save it with a key or a click.</p>
+      </div>
+      <span id="status" class="status" role="status" aria-live="polite">All changes saved</span>
     </header>
 
     <section class="card">
       <label class="row switch">
         <input type="checkbox" id="enabled">
-        <span><strong>Extension enabled</strong><em>Turn everything off without uninstalling.</em></span>
+        <span><strong>Snaffle is on</strong><em>Turn everything off without uninstalling.</em></span>
       </label>
     </section>
 
     <section class="card">
       <h2>Triggers</h2>
+      <p class="lead">Click a box, then press the keys or the mouse button you want. Escape cancels.</p>
 
-      <label class="row switch">
-        <input type="checkbox" id="keyEnabled">
-        <span><strong>Keyboard shortcut</strong><em>Fires on whatever is under the mouse pointer.</em></span>
-      </label>
-      <div class="recorder">
-        <button type="button" id="keyRec" class="rec">Alt + D</button>
-        <span class="hint" id="keyHint">Click the box, then press the combination you want.</span>
+      <div class="trigger">
+        <label class="row switch">
+          <input type="checkbox" id="keyEnabled">
+          <span><strong>Save what is under the pointer, by key</strong></span>
+        </label>
+        <div class="recorder">
+          <button type="button" id="keyRec" class="rec" aria-describedby="keyHint">Alt + S</button>
+          <span class="hint" id="keyHint"></span>
+        </div>
       </div>
 
-      <label class="row switch">
-        <input type="checkbox" id="mouseEnabled">
-        <span><strong>Mouse click</strong><em>A modifier is recommended, or you will hijack normal clicks.</em></span>
-      </label>
-      <div class="recorder">
-        <button type="button" id="mouseRec" class="rec">Alt + Middle click</button>
-        <span class="hint" id="mouseHint">Click the box using the button and modifiers you want.</span>
+      <div class="trigger">
+        <label class="row switch">
+          <input type="checkbox" id="mouseEnabled">
+          <span><strong>Save what is under the pointer, by mouse</strong></span>
+        </label>
+        <div class="recorder">
+          <button type="button" id="mouseRec" class="rec" aria-describedby="mouseHint">Alt + Middle click</button>
+          <span class="hint" id="mouseHint"></span>
+        </div>
       </div>
 
-      <label class="row switch">
-        <input type="checkbox" id="captureEnabled">
-        <span><strong>Full-page screenshot</strong><em>Scrolls the whole page, captures it, and stitches one tall image.</em></span>
-      </label>
-      <div class="recorder">
-        <button type="button" id="captureRec" class="rec">Alt + Shift + S</button>
-        <span class="hint" id="captureHint">Click the box, then press the combination you want.</span>
+      <div class="trigger">
+        <label class="row switch">
+          <input type="checkbox" id="captureEnabled">
+          <span><strong>Screenshot the whole page</strong></span>
+        </label>
+        <div class="recorder">
+          <button type="button" id="captureRec" class="rec" aria-describedby="captureHint">Alt + Shift + S</button>
+          <span class="hint" id="captureHint"></span>
+        </div>
       </div>
 
-      <label class="row switch">
-        <input type="checkbox" id="galleryEnabled">
-        <span><strong>Page media list</strong><em>Opens a panel of every image and video on the page for bulk download.</em></span>
-      </label>
-      <div class="recorder">
-        <button type="button" id="galleryRec" class="rec">Alt + Shift + I</button>
-        <span class="hint" id="galleryHint">Click the box, then press the combination you want.</span>
+      <div class="trigger">
+        <label class="row switch">
+          <input type="checkbox" id="galleryEnabled">
+          <span><strong>List every image and video on the page</strong></span>
+        </label>
+        <div class="recorder">
+          <button type="button" id="galleryRec" class="rec" aria-describedby="galleryHint">Alt + Shift + I</button>
+          <span class="hint" id="galleryHint"></span>
+        </div>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Where files go</h2>
+      <label class="field">
+        <span>Folder inside Downloads</span>
+        <input type="text" id="folder" placeholder="leave empty for Downloads itself" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>File name</span>
+        <input type="text" id="template" placeholder="{name}.{ext}" spellcheck="false">
+      </label>
+      <p class="tokens">
+        You can use
+        <code>{name}</code> <code>{ext}</code> <code>{host}</code> <code>{title}</code>
+        <code>{alt}</code> <code>{kind}</code> <code>{date}</code> <code>{time}</code>
+        <code>{datetime}</code> <code>{index}</code> <code>{ts}</code>
+      </p>
+      <p class="preview">A photo from example.com would be saved as <code id="preview">&nbsp;</code></p>
+      <label class="row switch">
+        <input type="checkbox" id="saveAs">
+        <span><strong>Ask where to save each file</strong><em>Opens the Save As dialog every time.</em></span>
+      </label>
+      <button type="button" id="openFolder" class="ghost small">Open the Downloads folder</button>
+    </section>
+
+    <section class="card">
+      <h2>Getting the best version</h2>
+      <label class="row switch">
+        <input type="checkbox" id="upgrade">
+        <span><strong>Look for the original resolution</strong><em>Picks the largest version a page offers and rewrites known thumbnail addresses (X, Reddit, Imgur, Wikimedia, Shopify, image proxies). If the rewritten address fails, the one the page loaded is used.</em></span>
+      </label>
+      <label class="row switch">
+        <input type="checkbox" id="preferLink">
+        <span><strong>Follow links to the full file</strong><em>When a thumbnail links straight to a .jpg or .mp4, save the linked file.</em></span>
+      </label>
+    </section>
+
+    <section class="card">
+      <h2>Streamed video</h2>
+      <label class="row switch">
+        <input type="checkbox" id="streamAssembly">
+        <span><strong>Rebuild streamed video into one file</strong><em>For video that is delivered in pieces, such as on X and Reddit. Saved as an MP4 with its sound. The download shows its progress and can be cancelled.</em></span>
+      </label>
+      <label class="row switch">
+        <input type="checkbox" id="posterFallback">
+        <span><strong>Save the still image when a video cannot be saved</strong><em>Used when no stream was seen for the video, or rebuilding is turned off.</em></span>
+      </label>
     </section>
 
     <section class="card">
@@ -64,93 +124,51 @@
       <label class="field">
         <span>Save as</span>
         <select id="captureFormat">
-          <option value="png">PNG - lossless, large files</option>
-          <option value="jpeg">JPEG - smaller, slight quality loss</option>
+          <option value="png">PNG - exact, larger files</option>
+          <option value="jpeg">JPEG - smaller, slightly softer</option>
           <option value="pdf">PDF - one long page</option>
         </select>
       </label>
-      <label class="field">
-        <span>JPEG / PDF quality (10-100)</span>
+      <label class="field" id="qualityRow">
+        <span>Quality, 10 to 100</span>
         <input type="number" id="captureQuality" min="10" max="100" step="1">
       </label>
       <label class="row switch">
         <input type="checkbox" id="captureHideFixed">
-        <span><strong>Suppress sticky headers after the first screen</strong><em>Otherwise a fixed navbar is baked into every screenful of the stitched image.</em></span>
+        <span><strong>Keep sticky headers from repeating</strong><em>Otherwise a fixed navigation bar is repeated down the image.</em></span>
       </label>
       <label class="row switch">
         <input type="checkbox" id="captureFullWidth">
-        <span><strong>Include horizontal overflow</strong><em>Captures sideways as well as down on pages wider than the window.</em></span>
+        <span><strong>Include what scrolls sideways</strong><em>For pages wider than the window.</em></span>
       </label>
     </section>
 
     <section class="card">
       <h2>Page media list</h2>
       <label class="field">
-        <span>Hide images smaller than (px, 0 for none)</span>
+        <span>Hide images smaller than this many pixels (0 shows everything)</span>
         <input type="number" id="galleryMinSize" min="0" step="10">
       </label>
-      <p class="tokens">The panel filters by type and URL too, and items whose size is not yet known are never hidden by this.</p>
     </section>
 
     <section class="card">
-      <h2>Where files go</h2>
-      <label class="field">
-        <span>Subfolder inside Downloads</span>
-        <input type="text" id="folder" placeholder="leave empty for the Downloads root">
-      </label>
-      <label class="field">
-        <span>File name</span>
-        <input type="text" id="template" placeholder="{name}.{ext}">
-      </label>
-      <p class="tokens">
-        Tokens:
-        <code>{name}</code> <code>{ext}</code> <code>{host}</code> <code>{title}</code>
-        <code>{alt}</code> <code>{kind}</code> <code>{date}</code> <code>{time}</code>
-        <code>{datetime}</code> <code>{index}</code> <code>{ts}</code>
-      </p>
-      <p class="preview">Preview: <code id="preview">&nbsp;</code></p>
-    </section>
-
-    <section class="card">
-      <h2>Behavior</h2>
-      <label class="row switch">
-        <input type="checkbox" id="upgrade">
-        <span><strong>Try for the original resolution</strong><em>Reads srcset and rewrites known thumbnail URLs (X, Reddit, Imgur, Wikimedia, Shopify, image proxies).</em></span>
-      </label>
-      <label class="row switch">
-        <input type="checkbox" id="preferLink">
-        <span><strong>Follow links to the full file</strong><em>When a thumbnail links straight to a .jpg or .mp4, take the linked file.</em></span>
-      </label>
-      <label class="row switch">
-        <input type="checkbox" id="streamAssembly">
-        <span><strong>Rebuild streamed video</strong><em>For HLS video such as X, downloads every segment of the highest-quality track and joins them into one file. Press Escape to cancel a long one.</em></span>
-      </label>
-      <label class="row switch">
-        <input type="checkbox" id="posterFallback">
-        <span><strong>Save the poster frame for streamed video</strong><em>Segmented players (YouTube and friends) cannot be saved as a file; this grabs the still instead.</em></span>
-      </label>
-      <label class="row switch">
-        <input type="checkbox" id="saveAs">
-        <span><strong>Ask where to save each file</strong><em>Opens the Save As dialog every time.</em></span>
-      </label>
+      <h2>Feedback</h2>
       <label class="row switch">
         <input type="checkbox" id="toast">
-        <span><strong>Show a confirmation toast</strong><em>Bottom-right message naming the saved file.</em></span>
+        <span><strong>Confirm each saved file</strong><em>A message in the corner naming the file, with a button to show it in its folder. Problems and long downloads are always shown.</em></span>
       </label>
       <label class="row switch">
         <input type="checkbox" id="outline">
-        <span><strong>Outline media under the cursor</strong><em>Always-on highlight so you can see what would be grabbed.</em></span>
+        <span><strong>Outline what would be saved</strong><em>Highlights the image or video under the pointer as you move.</em></span>
       </label>
       <label class="row switch">
         <input type="checkbox" id="contextMenu">
-        <span><strong>Add a right-click menu item</strong><em>"Save with Snaffle" on images and video.</em></span>
+        <span><strong>Add "Save with Snaffle" to the right-click menu</strong><em>On images and video.</em></span>
       </label>
     </section>
 
     <footer>
-      <button type="button" id="save" class="primary">Save</button>
-      <button type="button" id="reset" class="ghost">Reset to defaults</button>
-      <span id="status" class="status"></span>
+      <button type="button" id="reset" class="ghost">Reset everything to defaults</button>
     </footer>
   </div>
   <script src="shared.js"></script>

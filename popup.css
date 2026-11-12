@@ -1,44 +1,54 @@
 :root {
   --bg: #ffffff;
   --ink: #111827;
-  --muted: #6b7280;
+  --muted: #5b6472;
   --line: #e5e7eb;
   --accent: #2563eb;
   --code: #f3f4f6;
+  --bad: #b91c1c;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #171a21;
     --ink: #e5e7eb;
-    --muted: #9ca3af;
+    --muted: #a3acb9;
     --line: #2a2f3a;
     --accent: #60a5fa;
     --code: #1f2430;
+    --bad: #f87171;
   }
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
-  width: 280px;
+  width: 320px;
   margin: 0;
-  padding: 16px;
+  padding: 14px 16px 12px;
   background: var(--bg);
   color: var(--ink);
-  font: 13px/1.5 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
 }
 
-.head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+code {
+  font: 600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--code);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .head h1 { margin: 0; font-size: 16px; letter-spacing: -0.01em; }
 
+.toggle { cursor: pointer; }
 .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
 .toggle .track {
   display: block;
   width: 38px; height: 22px;
   border-radius: 11px;
-  background: var(--line);
+  background: #9ca3af;
   transition: background 0.15s;
-  cursor: pointer;
 }
 .toggle .knob {
   display: block;
@@ -51,43 +61,81 @@ body {
 }
 .toggle input:checked + .track { background: var(--accent); }
 .toggle input:checked + .track .knob { transform: translateX(16px); }
+.toggle input:focus-visible + .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.triggers { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-.trig { display: flex; align-items: center; gap: 8px; padding: 9px 12px; }
-.trig + .trig { border-top: 1px solid var(--line); }
-.trig .lbl { width: 44px; color: var(--muted); }
-.trig code {
-  flex: 1;
-  background: var(--code);
-  border-radius: 5px;
-  padding: 3px 7px;
-  font: 600 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.trig .state { font-size: 11px; color: var(--muted); }
-.trig .state.off { color: #ef4444; }
-
-.dest { margin: 12px 0; color: var(--muted); font-size: 12px; word-break: break-all; }
-.dest code { background: var(--code); border-radius: 4px; padding: 2px 5px; }
-
-button {
-  width: 100%;
-  padding: 9px 12px;
-  margin-bottom: 6px;
-  border: 1px solid transparent;
+.note {
+  margin: 0 0 10px;
+  padding: 8px 10px;
   border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  font: 600 13px/1 inherit;
-  cursor: pointer;
+  border: 1px solid var(--bad);
+  color: var(--bad);
+  font-weight: 600;
+  font-size: 12px;
 }
-button.ghost {
+
+section { margin-bottom: 12px; }
+h2 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+/* With Snaffle switched off, the triggers are shown but plainly inactive. */
+body.off .keys, body.off .acts { opacity: 0.45; }
+
+.keys { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.keys .or { color: var(--muted); font-size: 12px; }
+.key.disabled code { text-decoration: line-through; opacity: 0.55; }
+
+.acts { display: grid; gap: 6px; }
+.acts button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: transparent;
   color: var(--ink);
-  border-color: var(--line);
-  font-weight: 500;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-button:hover { filter: brightness(1.08); }
-button.ghost:hover { border-color: var(--accent); filter: none; }
+.acts button strong { font-weight: 600; }
+.acts button code { font-weight: 500; white-space: nowrap; color: var(--muted); }
+.acts button:hover:not(:disabled) { border-color: var(--accent); }
+.acts button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.acts button:disabled { opacity: 0.45; cursor: default; }
 
-.note { margin: 10px 0 0; color: var(--muted); font-size: 11px; }
-.note.warn { color: #dc2626; font-weight: 600; }
+.recent { list-style: none; margin: 0; padding: 0; }
+.recent .empty { color: var(--muted); font-size: 12px; }
+.recent .file {
+  display: block; width: 100%;
+  padding: 4px 6px;
+  border: 0; border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+.recent .file:hover, .recent .file:focus-visible { background: var(--code); outline: none; }
+
+.foot {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+}
+.foot .dest { overflow-wrap: anywhere; }
+.foot .links { display: flex; gap: 14px; }
+.link {
+  border: 0; background: none; padding: 0;
+  color: var(--accent);
+  font: inherit; font-weight: 600;
+  cursor: pointer;
+}
+.link:hover, .link:focus-visible { text-decoration: underline; outline: none; }

@@ -237,7 +237,7 @@
   function fromImg(img) {
     const cands = [];
     const nat = Math.max(img.naturalWidth || 0, img.width || 0, 1);
-    const push = (u, score) => { const a = abs(u, img); if (a) cands.push({ u: a, score }); };
+    const push = (u, score, w) => { const a = abs(u, img); if (a) cands.push({ u: a, score, w: w || 0 }); };
     const scoreOf = (desc) => {
       if (!desc) return nat;
       const w = /^([\d.]+)w$/.exec(desc); if (w) return parseFloat(w[1]);
@@ -254,7 +254,9 @@
       if (img.getAttribute('srcset')) sets.push(img.getAttribute('srcset'));
       const pic = img.closest && img.closest('picture');
       if (pic) pic.querySelectorAll('source[srcset]').forEach((s) => sets.push(s.getAttribute('srcset')));
-      for (const s of sets) for (const c of parseSrcset(s)) push(c.url, scoreOf(c.desc));
+      // A width descriptor says how wide that version really is.
+      const widthOf = (desc) => { const m = /^([d.]+)w$/.exec(desc || ''); return m ? Math.round(parseFloat(m[1])) : 0; };
+      for (const s of sets) for (const c of parseSrcset(s)) push(c.url, scoreOf(c.desc), widthOf(c.desc));
 
       // Lazy-load attributes hold all sorts of things - ids, JSON, flags. Only
       // take one that reads as an address: absolute, or ending in an image type.
@@ -271,7 +273,7 @@
     if (!cands.length) return null;
     cands.sort((a, b) => b.score - a.score);
     const up = upgrade(cands[0].u);
-    return { url: up, alts: fallbacks([cands[0].u, current], up), kind: 'image', el: img, alt: img.alt || '' };
+    return { url: up, alts: fallbacks([cands[0].u, current], up), kind: 'image', el: img, alt: img.alt || '', width: cands[0].w };
   }
 
   // Every rewrite is a guess about a server we do not control, so each hit
@@ -444,7 +446,33 @@
 
   /* -------------------------------------------------------------- overlay */
 
-  let shadowHost = null, shadowRoot = null, outlineBox = null, toastBox = null, toastTimer = null;
+  let shadowHost = null, shadowRoot = null, outlineBox = null, toastList = null;
+
+  const OVERLAY_CSS =
+    ':host{all:initial}' +
+    '.box{position:fixed;pointer-events:none;border:2px solid #3b82f6;border-radius:4px;' +
+    'box-shadow:0 0 0 2px rgba(59,130,246,.25);transition:opacity .15s;opacity:0}' +
+    '.box.on{opacity:1}' +
+    '.box.hit{border-color:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.35)}' +
+    // The list itself never takes clicks; only the toasts in it do.
+    '.toasts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;align-items:flex-end;' +
+    'gap:8px;pointer-events:none;max-width:min(420px,calc(100vw - 32px))}' +
+    '.toast{pointer-events:auto;box-sizing:border-box;max-width:100%;display:grid;grid-template-columns:1fr auto;' +
+    'gap:6px 10px;align-items:start;padding:10px 12px;border-radius:10px;color:#fff;background:#111827;' +
+    'font:500 13px/1.4 ui-sans-serif,system-ui,"Segoe UI",sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.35);' +
+    'opacity:0;transform:translateY(8px);transition:opacity .18s,transform .18s}' +
+    '.toast.on{opacity:1;transform:none}' +
+    '.toast.ok{background:#065f46}.toast.warn{background:#78350f}.toast.err{background:#7f1d1d}.toast.busy{background:#1e3a8a}' +
+    '.msg{overflow-wrap:anywhere}' +
+    '.x{all:unset;cursor:pointer;opacity:.7;font-size:16px;line-height:1;padding:1px 3px;border-radius:4px}' +
+    '.x:hover,.x:focus-visible{opacity:1;background:rgba(255,255,255,.18)}' +
+    '.acts{grid-column:1/-1;display:flex;gap:8px;flex-wrap:wrap}' +
+    '.acts:empty,.bar[hidden]{display:none}' +
+    '.acts button{all:unset;cursor:pointer;font-weight:650;padding:4px 10px;border-radius:6px;background:rgba(255,255,255,.16)}' +
+    '.acts button:hover,.acts button:focus-visible{background:rgba(255,255,255,.3)}' +
+    '.bar{grid-column:1/-1;height:4px;border-radius:2px;background:rgba(255,255,255,.25);overflow:hidden}' +
+    '.bar i{display:block;height:100%;width:0;background:#fff;transition:width .25s}' +
+    '@media (prefers-reduced-motion:reduce){.toast,.bar i,.box{transition:none}}';
 
   function ui() {
     if (shadowRoot && shadowHost && shadowHost.isConnected) return shadowRoot;
@@ -452,22 +480,10 @@
     shadowHost.id = '__snaffle_ui';
     shadowHost.style.cssText = 'all:initial;position:fixed;top:0;left:0;width:0;height:0;z-index:2147483647;';
     shadowRoot = shadowHost.attachShadow({ mode: 'open' });
-    shadowRoot.innerHTML =
-      '<style>' +
-      ':host{all:initial}' +
-      '.box{position:fixed;pointer-events:none;border:2px solid #3b82f6;border-radius:4px;' +
-      'box-shadow:0 0 0 2px rgba(59,130,246,.25);transition:opacity .15s;opacity:0}' +
-      '.box.on{opacity:1}' +
-      '.box.hit{border-color:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.35)}' +
-      '.toast{position:fixed;right:16px;bottom:16px;max-width:380px;padding:10px 14px;border-radius:10px;' +
-      'font:500 13px/1.4 ui-sans-serif,system-ui,"Segoe UI",sans-serif;color:#fff;background:#111827;' +
-      'box-shadow:0 8px 24px rgba(0,0,0,.35);opacity:0;transform:translateY(8px);transition:all .18s;' +
-      'pointer-events:none;word-break:break-all}' +
-      '.toast.on{opacity:1;transform:translateY(0)}' +
-      '.toast.ok{background:#065f46}.toast.warn{background:#78350f}.toast.err{background:#7f1d1d}' +
-      '</style><div class="box"></div><div class="toast"></div>';
+    shadowRoot.innerHTML = '<style>' + OVERLAY_CSS + '</style><div class="box"></div><div class="toasts"></div>';
     outlineBox = shadowRoot.querySelector('.box');
-    toastBox = shadowRoot.querySelector('.toast');
+    toastList = shadowRoot.querySelector('.toasts');
+    toasts.clear();
     (document.body || document.documentElement).appendChild(shadowHost);
     return shadowRoot;
   }
@@ -500,20 +516,99 @@
     }, 600);
   }
 
-  function toast(msg, kind) {
-    if (!cfg.toast) return;
-    if (window.top !== window) { ask({ type: 'relayTop', action: 'toast', text: msg, kind }); return; }
-    showToast(msg, kind);
+  /* --------------------------------------------------------------- toasts */
+
+  // Several can be on screen at once: a video that is still downloading keeps
+  // its own toast, with a progress bar and a Cancel button, while other grabs
+  // report beside it. A toast with an `id` is updated in place.
+  //
+  //   opts.id        update the toast with this id instead of adding one
+  //   opts.sticky    stay until replaced or dismissed (work in progress)
+  //   opts.progress  0-100, draws the bar
+  //   opts.actions   [{ label, send }] - a button that sends `send` to the
+  //                  service worker when pressed
+  const toasts = new Map();   // id -> { el, timer, life }
+  const MAX_TOASTS = 4;
+  let toastSeq = 0;
+
+  // From any frame; the top page is where toasts are drawn, so one inside a
+  // small iframe is not clipped to it.
+  function toast(msg, kind, opts) {
+    if (window.top !== window) { ask({ type: 'relayTop', action: 'toast', text: msg, kind, opts }); return; }
+    showToast(msg, kind, opts);
   }
 
-  function showToast(msg, kind) {
-    if (!cfg.toast) return;
-    ui();
-    toastBox.textContent = msg;
-    toastBox.className = 'toast on ' + (kind || 'ok');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { toastBox.classList.remove('on'); }, kind === 'err' ? 4500 : 2200);
+  function dismissToast(id) {
+    const t = toasts.get(id);
+    if (!t) return;
+    toasts.delete(id);
+    clearTimeout(t.timer);
+    t.el.classList.remove('on');
+    setTimeout(() => t.el.remove(), 220);
   }
+
+  function showToast(msg, kind, opts) {
+    const o = opts || {};
+    kind = kind || 'ok';
+    // The setting turns off confirmations. Problems and work in progress are
+    // always shown: silence after a failed grab would look like success.
+    if (!cfg.toast && kind === 'ok') {
+      if (o.id) dismissToast(o.id);
+      return;
+    }
+    ui();
+
+    const id = o.id || 'toast-' + (++toastSeq);
+    let t = toasts.get(id);
+    if (!t || !t.el.isConnected) {
+      const el = document.createElement('div');
+      el.innerHTML = '<span class="msg"></span><button class="x" aria-label="Dismiss">&times;</button>' +
+                     '<div class="bar" hidden><i></i></div><div class="acts"></div>';
+      t = { el, timer: 0, life: 0 };
+      toasts.set(id, t);
+      el.querySelector('.x').addEventListener('click', () => dismissToast(id));
+      // Reading or reaching for a button should not race the timer.
+      el.addEventListener('mouseenter', () => clearTimeout(t.timer));
+      el.addEventListener('mouseleave', () => { if (t.life) t.timer = setTimeout(() => dismissToast(id), 1500); });
+      toastList.appendChild(el);
+      requestAnimationFrame(() => el.classList.add('on'));
+
+      // Keep the stack short; work in progress is never the one dropped.
+      const open = Array.from(toasts.entries());
+      for (const [oldId, old] of open) {
+        if (toasts.size <= MAX_TOASTS) break;
+        if (oldId !== id && old.life) dismissToast(oldId);
+      }
+    }
+
+    const el = t.el;
+    el.className = 'toast ' + kind + (el.classList.contains('on') ? ' on' : '');
+    el.setAttribute('role', kind === 'err' ? 'alert' : 'status');
+    el.dataset.seq = String(++toastSeq);
+    el.querySelector('.msg').textContent = msg;
+
+    const bar = el.querySelector('.bar');
+    bar.hidden = o.progress == null;
+    if (o.progress != null) bar.firstChild.style.width = Math.max(0, Math.min(100, o.progress)) + '%';
+
+    const acts = el.querySelector('.acts');
+    acts.textContent = '';
+    for (const a of o.actions || []) {
+      const b = document.createElement('button');
+      b.textContent = a.label;
+      b.addEventListener('click', () => { ask(a.send); if (a.close !== false) dismissToast(id); });
+      acts.appendChild(b);
+    }
+
+    clearTimeout(t.timer);
+    t.life = o.sticky ? 0 : (kind === 'err' ? 8000 : (o.actions && o.actions.length ? 6000 : 3000));
+    if (t.life) t.timer = setTimeout(() => dismissToast(id), t.life);
+  }
+
+  // "Show in folder" for a download Chrome knows by id.
+  const showAction = (downloadId) => (downloadId != null
+    ? [{ label: 'Show in folder', send: { type: 'showDownload', id: downloadId } }]
+    : []);
 
   /* ------------------------------------------------------------ download */
 
@@ -592,7 +687,7 @@
       }
       if (sent) {
         const res = await ask({ type: 'blobSave', id, mime: blob.type, filename: path });
-        if (res && res.ok) return { name: res.filename, filed: true };
+        if (res && res.ok) return { name: res.filename, filed: true, id: res.id };
         if (res && res.cancelled) return { name: '', cancelled: true };
       }
     }
@@ -605,9 +700,9 @@
 
   // Say that a file was saved - unless the user cancelled the Save As dialog,
   // in which case there is nothing to say.
-  function announce(prefix, saved, suffix, kind) {
-    if (saved.cancelled) return;
-    toast(prefix + savedText(saved) + (suffix || ''), kind || 'ok');
+  function announce(prefix, saved, suffix, kind, toastId) {
+    if (saved.cancelled) { if (toastId) dismissToast(toastId); return; }
+    toast(prefix + savedText(saved) + (suffix || ''), kind || 'ok', { id: toastId, actions: showAction(saved.id) });
   }
 
   // The browser could not fetch it alone. The page can try with its own
@@ -625,7 +720,7 @@
       reason = (e && e.message) || String(e);
     }
     const res = await ask({ type: 'proxyGrab', url, filename: path });
-    if (res && res.ok) return { ok: true, saved: { name: res.filename, filed: true } };
+    if (res && res.ok) return { ok: true, saved: { name: res.filename, filed: true, id: res.id } };
     if (res && res.cancelled) return { ok: true, saved: { name: '', cancelled: true } };
     // "Failed to fetch" is the browser's word for a cross-origin refusal; the
     // extension's own attempt says more about what the site actually did.
@@ -678,7 +773,7 @@
     // The page was given a whole file after all.
     if (res.direct) {
       if (res.cancelled) return true;
-      if (res.ok) { toast('Saved ' + res.filename + (res.guess || ''), res.guess ? 'warn' : 'ok'); return true; }
+      if (res.ok) { toast('Saved ' + res.filename + (res.guess || ''), res.guess ? 'warn' : 'ok', { actions: showAction(res.id) }); return true; }
       const fb = await fallback(res.url, res.filename || tokens.name + '.mp4');
       if (fb.ok) announce('Saved ', fb.saved, res.guess, res.guess ? 'warn' : 'ok');
       else toast('Could not save this video: ' + (fb.reason || res.error || 'the site blocked it'), 'err');
@@ -689,7 +784,10 @@
       toast('Could not save this video: ' + (res.error || 'the download did not start'), 'err');
       return true;
     }
-    toast('Reading the stream... (Esc to cancel)', 'warn');
+    toast('Reading the stream...', 'busy', {
+      id: res.id, sticky: true, progress: 0,
+      actions: [{ label: 'Cancel', send: { type: 'cancelStreams', id: res.id }, close: false }]
+    });
     return true;
   }
 
@@ -763,15 +861,17 @@
     // page itself loaded. The service worker answers only once the server has,
     // so "Saved" means a real file of the right kind is arriving.
     const candidates = [hit.url].concat(hit.alts || []).map((u) => ({ url: u, tokens: tokensFor(hit, u) }));
-    const slow = setTimeout(() => toast('Saving...', 'warn'), 600);
+    const tid = 'grab-' + Date.now();
+    const slow = setTimeout(() => toast('Saving...', 'busy', { id: tid, sticky: true }), 600);
     const res = await ask({ type: 'grab', candidates, pageUrl: location.href });
     clearTimeout(slow);
-    if (res && res.ok) { toast(prefix + res.filename, 'ok'); return; }
+    if (res && res.ok) { toast(prefix + res.filename, 'ok', { id: tid, actions: showAction(res.id) }); return; }
+    if (res && res.cancelled) { toast('Cancelled.', 'warn', { id: tid }); return; }
 
     const last = candidates[candidates.length - 1];
     const fb = await fallback(last.url, (res && res.filename) || last.tokens.name + '.' + last.tokens.ext);
-    if (fb.ok) announce(prefix, fb.saved);
-    else toast('Could not save this: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err');
+    if (fb.ok) announce(prefix, fb.saved, '', 'ok', tid);
+    else toast('Could not save this: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err', { id: tid });
   }
 
   /* ----------------------------------------------- shared with sibling files */
@@ -783,9 +883,9 @@
     get cfg() { return cfg; },
     alive,
     retire() { dead = true; if (shadowHost) shadowHost.remove(); },
-    ui, toast, flash, ask, pageDownload, saveBlob, savedText, announce, fallback,
+    ui, toast, dismissToast, showAction, flash, ask, pageDownload, saveBlob, savedText, announce, fallback,
     resolve, elementStack, ancestors, tokensFor, statusInfo, hostToken,
-    fromImg, fromVideo, fromBackground,
+    fromImg, fromVideo, fromBackground, linkFor, fallbacks,
     abs, upgrade, parseSrcset, grab,
     capture: null,        // set by capture.js when it is loaded on demand
     gallery: null,        // set by gallery.js likewise, in the top frame
@@ -798,7 +898,9 @@
   const modsMatch = (t, e) => !!t.ctrl === e.ctrlKey && !!t.alt === e.altKey && !!t.shift === e.shiftKey && !!t.meta === e.metaKey;
 
   function isTyping(e) {
-    const el = (e && e.target) || document.activeElement;
+    // Inside a shadow root the event's target is the host; the first entry
+    // of the composed path is the element actually being typed into.
+    const el = (e && ((e.composedPath && e.composedPath()[0]) || e.target)) || document.activeElement;
     if (!el || !el.tagName) return false;
     if (el.isContentEditable) return true;
     return /^(input|textarea|select)$/i.test(el.tagName);
@@ -910,7 +1012,7 @@
       });
       send({ ok: true });
     } else if (msg.type === 'toast') {
-      if (window.top === window) showToast(msg.text, msg.kind);
+      if (window.top === window) showToast(msg.text, msg.kind, msg.opts);
       send({ ok: true });
     } else if (msg.type === 'streamStarted') { streaming++; send({ ok: true }); }
     else if (msg.type === 'streamEnded') { streaming = Math.max(0, streaming - 1); send({ ok: true }); }

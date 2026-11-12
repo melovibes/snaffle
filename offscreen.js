@@ -153,6 +153,9 @@ async function viaLibrary(job, ctl) {
     const hadAudio = (await input.getAudioTracks()).length > 0;
     const sound = used.some((t) => t.type === 'audio');
 
+    // The converter knows how much of the video's running time it has
+    // written, which is a truer measure than a count of requests.
+    conv.onProgress = (p) => { ctl.timed = true; ctl.report(Math.min(99, Math.round(p * 100))); };
     await conv.execute();
     if (ctl.cancelled) throw new Error('cancelled');
 
@@ -206,7 +209,7 @@ async function viaJoin(info, ctl) {
 }
 
 async function runStream(job) {
-  const ctl = { cancelled: false, conv: null, input: null, abort: new AbortController(), onPiece: null };
+  const ctl = { cancelled: false, conv: null, input: null, abort: new AbortController(), onPiece: null, timed: false, report: null };
   // Cancelling must end the job at once, whatever the library is in the
   // middle of, so the job races a promise that only cancel() settles.
   let stop;
@@ -232,16 +235,21 @@ async function runStream(job) {
     tell({ type: 'os:progress', id: job.id, tabId: job.tabId, pct });
   };
 
+  ctl.report = report;
+
   const work = async () => {
     let result;
     const info = await inspect(job, ctl);
     if (info.live) throw new Error('This is a live stream, which has no end to save.');
     if (/SAMPLE-AES/.test(info.key)) throw new Error('This stream is encrypted (DRM) and cannot be saved.');
 
-    // A split-audio stream has a second set of segments to fetch.
-    const total = Math.max(1, info.segs.length * (info.splitAudio ? 2 : 1));
+    // Until the converter starts reporting, progress is segments fetched out
+    // of segments expected. A split-audio stream has a second set of them, and
+    // each rendition has an init piece.
+    const perTrack = info.segs.length + (info.init ? 1 : 0);
+    const total = Math.max(1, perTrack * (info.splitAudio ? 2 : 1));
     let pieces = 0;
-    ctl.onPiece = () => report(Math.min(99, Math.round((++pieces / total) * 100)));
+    ctl.onPiece = () => { if (!ctl.timed) report(Math.min(95, Math.round((++pieces / total) * 100))); };
 
     try {
       result = await viaLibrary(job, ctl);
@@ -261,6 +269,7 @@ async function runStream(job) {
           : 'the stream could not be converted (' + why + ')');
       }
       pieces = 0;
+      ctl.timed = false;
       result = await viaJoin(info, ctl);
     }
     return result;
@@ -297,7 +306,9 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
       respond({ ok: true });
       return false;
     case 'os:cancel':
-      for (const j of jobs.values()) if (msg.tabId == null || j.tabId === msg.tabId) j.cancel();
+      for (const [id, j] of jobs) {
+        if (msg.id ? id === msg.id : (msg.tabId == null || j.tabId === msg.tabId)) j.cancel();
+      }
       respond({ ok: true });
       return false;
     case 'os:seal':

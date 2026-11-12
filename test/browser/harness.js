@@ -74,10 +74,14 @@ async function launch(opts) {
     },
 
     async setCfg(patch) {
+      // Written the way the options page writes it: only what differs from
+      // the defaults, and nothing at all when nothing does. Setting a value
+      // back to its default must leave storage as a fresh install has it.
       await probe.evaluate(async (p) => {
         const s = await chrome.storage.sync.get('cfg');
-        const cfg = Object.assign({}, s.cfg || {}, p);
-        await chrome.storage.sync.set({ cfg });
+        const next = SnaffleShared.toStore(Object.assign(SnaffleShared.effective(s.cfg), p));
+        if (Object.keys(next).length <= 1) await chrome.storage.sync.remove('cfg');
+        else await chrome.storage.sync.set({ cfg: next });
       }, patch);
       await sleep(150);
     },
@@ -98,8 +102,17 @@ async function launch(opts) {
       return page.evaluate(() => {
         const host = document.getElementById('__snaffle_ui');
         if (!host || !host.shadowRoot) return null;
-        const t = host.shadowRoot.querySelector('.toast');
-        return t ? { text: t.textContent, cls: t.className } : null;
+        // Several toasts can be up; the one most recently written to is the news.
+        const all = Array.from(host.shadowRoot.querySelectorAll('.toast'));
+        if (!all.length) return null;
+        const t = all.sort((x, y) => Number(y.dataset.seq) - Number(x.dataset.seq))[0];
+        const bar = t.querySelector('.bar');
+        return {
+          text: t.querySelector('.msg').textContent, cls: t.className, count: all.length,
+          actions: Array.from(t.querySelectorAll('.acts button')).map((b) => b.textContent),
+          progress: bar && !bar.hidden ? bar.firstChild.style.width : null,
+          all: all.map((x) => x.querySelector('.msg').textContent)
+        };
       });
     },
 

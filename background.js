@@ -23,10 +23,13 @@ async function buildFilename(tok, cfg, index) {
   return S.buildPath(tok, cfg || await getCfg(), index || await nextIndex());
 }
 
-function toastTab(tabId, text, kind) {
+function toastTab(tabId, text, kind, opts) {
   if (tabId == null || tabId < 0) return;
-  chrome.tabs.sendMessage(tabId, { type: 'toast', text, kind }, { frameId: 0 }, () => void chrome.runtime.lastError);
+  chrome.tabs.sendMessage(tabId, { type: 'toast', text, kind, opts }, { frameId: 0 }, () => void chrome.runtime.lastError);
 }
+
+// The button a toast carries once its file is on disk.
+const showAction = (id) => (id != null ? [{ label: 'Show in folder', send: { type: 'showDownload', id } }] : []);
 
 /* ------------------------------------------------------------- downloads */
 
@@ -216,7 +219,7 @@ async function saveBlobUrl(url, filename, cfg) {
       if (item.state === 'interrupted') {
         return { ok: false, cancelled: item.error === 'USER_CANCELED', error: WHY[item.error] || 'the browser would not save it' };
       }
-      if (item.state === 'complete') return { ok: true, filename };
+      if (item.state === 'complete') return { ok: true, filename, id: res.id };
       await sleep(100);
     }
     return { ok: false, error: 'saving took too long' };
@@ -402,10 +405,12 @@ async function finishStream(msg) {
     closeOffscreenIfIdle();
   };
 
-  if (msg.cancelled) { toastTab(tabId, 'Cancelled.', 'warn'); ended(); return; }
+  // Each verdict replaces the job's own progress toast.
+  const at = { id: msg.id };
+  if (msg.cancelled) { toastTab(tabId, 'Cancelled.', 'warn', at); ended(); return; }
   if (!msg.ok) {
     const why = String(msg.error || 'the stream could not be read');
-    toastTab(tabId, /^[A-Z]/.test(why) ? why : 'Could not save this video: ' + why, 'err');
+    toastTab(tabId, /^[A-Z]/.test(why) ? why : 'Could not save this video: ' + why, 'err', at);
     ended();
     return;
   }
@@ -418,7 +423,8 @@ async function finishStream(msg) {
   const filename = await buildFilename(tok, cfg);
   const res = await saveBlobUrl(msg.url, filename, cfg);
   if (!res.ok) {
-    if (!res.cancelled) toastTab(tabId, 'Could not save this video: ' + res.error, 'err');
+    if (res.cancelled) toastTab(tabId, 'Cancelled.', 'warn', at);
+    else toastTab(tabId, 'Could not save this video: ' + res.error, 'err', at);
     ended();
     return;
   }
@@ -427,7 +433,8 @@ async function finishStream(msg) {
     (msg.silent ? ' - no sound: the audio track could not be included' : '') +
     (msg.joined ? ' - saved as joined segments, so some players may show the wrong length' : '') +
     (meta.guess || '');
-  toastTab(tabId, 'Saved ' + filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok');
+  toastTab(tabId, 'Saved ' + filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok',
+    { id: msg.id, actions: showAction(res.id) });
   ended();
 }
 
@@ -479,23 +486,6 @@ async function collectMedia(sender) {
   } finally {
     mediaBuckets.delete(token);
   }
-}
-
-async function bulkGrab(msg, sender) {
-  const cfg = await getCfg();
-  let saved = 0, failed = 0;
-  for (const item of msg.items || []) {
-    const filename = await buildFilename(item.tokens, cfg);
-    const res = await startDownload({ url: item.url, filename, conflictAction: 'uniquify', saveAs: false });
-    if (res.ok) {
-      saved++;
-      await remember(res.id, { tabId: sender.tab ? sender.tab.id : null, frameId: 0, url: item.url, filename });
-    } else {
-      failed++;
-    }
-    await sleep(120);               // keep the downloads panel from choking
-  }
-  return { ok: true, saved, failed };
 }
 
 /* ----------------------------------------------------- injecting scripts */
@@ -558,14 +548,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'proxyGrab': proxyGrab(msg).then(sendResponse); return true;
     case 'captureViewport': captureViewport(sender).then(sendResponse); return true;
     case 'collectMedia': collectMedia(sender).then(sendResponse); return true;
-    case 'bulkGrab': bulkGrab(msg, sender).then(sendResponse); return true;
     case 'feature': runFeature(msg.name, tabId).then(sendResponse); return true;
+    case 'canRun':
+      // Asked by the popup: is this a page Snaffle can work on? Finding out
+      // also loads it into a tab that was open before it was installed.
+      if (tabId == null) { sendResponse({ ok: false }); return false; }
+      injectCore(tabId).then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
+      return true;
     case 'buildName':
       buildFilename(msg.tokens).then((f) => sendResponse({ ok: true, filename: f.split('/').pop(), path: f }));
       return true;
 
     case 'cancelStreams':
-      if (sender.tab) toOffscreen({ type: 'os:cancel', tabId: sender.tab.id });
+      // One job when its toast's Cancel is pressed; all of the tab's on Escape.
+      if (sender.tab) toOffscreen({ type: 'os:cancel', tabId: sender.tab.id, id: msg.id || null });
+      sendResponse({ ok: true });
+      return false;
+
+    case 'showDownload':
+      try { chrome.downloads.show(msg.id); } catch (_) {}
       sendResponse({ ok: true });
       return false;
 
@@ -582,7 +583,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'relayTop':
       if (sender.tab) {
-        chrome.tabs.sendMessage(sender.tab.id, { type: msg.action, text: msg.text, kind: msg.kind }, { frameId: 0 },
+        chrome.tabs.sendMessage(sender.tab.id, { type: msg.action, text: msg.text, kind: msg.kind, opts: msg.opts }, { frameId: 0 },
           () => void chrome.runtime.lastError);
       }
       sendResponse({ ok: true });
@@ -599,7 +600,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // From the worker page. A tab cannot forge these: its messages carry a tab.
     case 'os:progress':
-      if (fromWorkerPage(sender)) toastTab(msg.tabId, 'Downloading video: ' + msg.pct + '% (Esc to cancel)', 'warn');
+      if (fromWorkerPage(sender)) {
+        toastTab(msg.tabId, 'Downloading video: ' + msg.pct + '%', 'busy', {
+          id: msg.id, sticky: true, progress: msg.pct,
+          actions: [{ label: 'Cancel', send: { type: 'cancelStreams', id: msg.id }, close: false }]
+        });
+      }
       return false;
     case 'os:done':
       if (fromWorkerPage(sender)) finishStream(msg);
@@ -645,7 +651,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }, { tab, frameId: info.frameId });
 
   if (tab && tab.id != null && !res.cancelled) {
-    toastTab(tab.id, res.ok ? 'Saved ' + res.filename : 'Could not save this: ' + res.error, res.ok ? 'ok' : 'err');
+    toastTab(tab.id, res.ok ? 'Saved ' + res.filename : 'Could not save this: ' + res.error, res.ok ? 'ok' : 'err',
+      { actions: res.ok ? showAction(res.id) : [] });
   }
 });
 

@@ -57,18 +57,41 @@ Found while building it, and fixed: the library retries a failed request for eve
 
 Not observable here, so unverified: the fresh copy of the content script injected into open tabs when the extension updates. Reloading an unpacked extension under automation removes it for good. What is checked is the two halves around it: injecting into a tab that already has a working copy does not double the grab (X03), and a copy that has lost the extension says to reload instead of half-working (X01).
 
+## Status after Phase 3 (v1.3.0)
+
+**76 checks: 72 pass, 4 known defects, 1 not observable under automation.**
+
+Phase 3 was the interface: messages, the options page, the popup, and the media list.
+
+| Problem | Now | Checks |
+| --- | --- | --- |
+| One message at a time, not clickable; a video's progress was overwritten by the next grab | Messages stack; a download keeps its own, with a progress bar and Cancel; saved files get "Show in folder" | G28, S15, S16 |
+| With messages turned off there was no feedback at all | The setting silences confirmations only; failures and progress always show | G29 |
+| A recorded shortcut looked applied but was not saved | Every change saves as it is made; there is no Save button | P02, P03, P10 |
+| No warning for shortcuts Chrome uses, keeps, or that clash | Flagged as recorded | P08 |
+| Mouse recorder could not be cancelled | Escape or clicking away cancels | P09 |
+| Quality box shown for PNG | Shown only when the format has a quality | P07 |
+| Reset wiped settings on one click | Takes a second press | P06 |
+| Popup labels were cryptic; buttons did nothing on some pages | Says what each trigger does; says when it cannot run and disables its buttons; lists recent saves | P04, P11, P12 |
+| Media list had no keyboard access, no backdrop, no focus trap | A modal dialog: arrows, Space, Ctrl+A, Tab kept inside, Escape closes | L06, L07, L08 |
+| Media list rebuilt every card on each keystroke | Cards are made once and shown or hidden | L10 |
+| Opening the list fetched full-size originals | Previews reuse what the page had loaded | L02 |
+| Size filter was not applied again when sizes arrived | It is | L05 |
+| A thumbnail and its linked full file were listed separately | One item, the full file | L04 |
+| Bulk download counted files started, closed at once, and did not say what failed | Saves one at a time, stays open, names each failure and leaves it selected | L03, L11 |
+
+Found while building it, and fixed: the typing guard looked at the retargeted event target, so typing in a text box inside a shadow root (web components) did not count as typing and a trigger could fire mid-word (G30).
+
 Still open, by phase:
 
 | Check | Defect | Phase |
 | --- | --- | --- |
-| L06 | Media list has no keyboard access | 3 |
-| P02 | Recorded shortcut not saved until Save is pressed | 3 |
 | C02 | Capture trusts `devicePixelRatio` instead of measuring the shot | 4 |
 | C03 | Fixed elements hidden before the first shot | 4 |
 | C04 | Inner scrolling containers not detected | 4 |
 | C05 | No check that the tab is still in front | 4 |
-| L02 | Thumbnails load full-size originals | 4 |
-| L05 | Size filter not re-applied when dimensions arrive | 4 |
+
+Screenshot interface work that is also Phase 4: a way to cancel a capture, a results page instead of a blind download, and choosing the format at capture time.
 
 G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an extension's filename hook when downloads are driven through the automation protocol. The renaming logic is unit-tested; the end-to-end behaviour needs a manual check.
 
