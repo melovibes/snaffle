@@ -12,49 +12,10 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { launch, sleep } = require('./harness');
 const { start } = require('./server');
+const { overlay } = require('./overlay');
 
 const OUT = path.join(__dirname, '..', '..', 'docs', 'img', 'demo.gif');
 const W = 960, H = 600;
-
-// Runs inside each page before anything else does.
-function overlay() {
-  if (window.top !== window || window.__demo) return;
-  const cursor = document.createElement('div');
-  cursor.id = '__demo_cursor';
-  cursor.style.cssText = 'position:fixed;left:0;top:0;width:20px;height:24px;z-index:2147483647;pointer-events:none;' +
-    'transform:translate(-100px,-100px);background:#111;' +
-    'clip-path:polygon(0 0,0 76%,24% 58%,40% 96%,54% 90%,38% 54%,70% 54%);' +
-    'filter:drop-shadow(0 0 1px #fff) drop-shadow(0 0 1px #fff) drop-shadow(0 2px 3px rgba(0,0,0,.45));';
-  const keys = document.createElement('div');
-  keys.id = '__demo_keys';
-  keys.style.cssText = 'position:fixed;left:24px;bottom:24px;z-index:2147483647;pointer-events:none;opacity:0;' +
-    'transition:opacity .18s;background:#111827;color:#fff;border-radius:9px;padding:9px 16px;' +
-    'font:600 16px/1.2 system-ui,"Segoe UI",sans-serif;letter-spacing:.2px;box-shadow:0 6px 20px rgba(0,0,0,.28);';
-  let timer = 0;
-  const attach = () => {
-    const root = document.documentElement;
-    if (!root) return;
-    // Last in the document, so nothing opened later sits on top of them.
-    if (root.lastElementChild !== cursor) { root.appendChild(keys); root.appendChild(cursor); }
-  };
-  document.addEventListener('mousemove', (e) => {
-    attach();
-    cursor.style.transform = 'translate(' + e.clientX + 'px,' + e.clientY + 'px)';
-  }, true);
-  window.__demo = {
-    keys(text, ms) {
-      attach();
-      keys.textContent = text;
-      keys.style.opacity = '1';
-      clearTimeout(timer);
-      timer = setTimeout(() => { keys.style.opacity = '0'; }, ms || 1400);
-    },
-    hide(yes) {
-      cursor.style.display = yes ? 'none' : '';
-      keys.style.display = yes ? 'none' : '';
-    }
-  };
-}
 
 (async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'snaffle-demo-'));

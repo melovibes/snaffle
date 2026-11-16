@@ -217,6 +217,10 @@ Only `shared.js` and `content.js` run in every frame of every page. The screensh
 
 Settings are stored as differences from the defaults, not as a full copy, so a default that changes in a later version reaches everyone who never touched that setting.
 
+## Chrome Web Store
+
+Snaffle is not on the Chrome Web Store yet. Everything a submission needs is prepared: [`CHROMEWEBSTORE.md`](CHROMEWEBSTORE.md) holds the listing text, a justification for every permission and the data-use answers; [`PRIVACY.md`](PRIVACY.md) is the privacy policy; `store-assets/` holds the screenshots and promotional tile at the sizes the store asks for; and `npm run package:store` builds the zip to upload.
+
 ## Icon
 
 `icons/logo.png` is the master. Regenerate the set with:
@@ -237,6 +241,8 @@ npm run test:browser  # 83 checks in headless Chromium, about nine minutes; need
 npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
 npm run shots         # retake the screenshots in docs/img
 npm run demo          # re-record docs/img/demo.gif; needs ffmpeg on the PATH
+npm run store:shots   # retake the Chrome Web Store pictures in store-assets/
+npm run package:store # build and load-test the zip the Chrome Web Store wants
 ```
 
 All three of lint, the offline checks and the browser checks run on GitHub for every push to `main` and every pull request (`.github/workflows/tests.yml`), along with a check that the release zip builds and loads.
@@ -280,6 +286,7 @@ When it recognizes your trigger, Snaffle hides `pointerdown` from the page and c
 - DRM-protected video cannot be saved.
 - Permissions, and why each is there: `<all_urls>` because media can be on any site and screenshots need it; `webRequest` to see the video playlist URLs a page requests; `scripting` to load Snaffle into tabs that were open before it was installed, and to load the screenshot and media-list code on demand; `offscreen` for the hidden worker page; `declarativeNetRequestWithHostAccess` to add a `Referer` to the extension's own video requests. Chrome describes that permission as reading your browsing history. Nothing is read off-page and nothing is sent anywhere — recorded playlist URLs live in `chrome.storage.session`, which is memory-only, cleared when Chrome closes, and pruned after two hours. Downloads go straight to your disk.
 - Settings live in `chrome.storage.sync`, so they follow your Chrome profile across machines.
+- What Snaffle handles and where it stays is set out in the [privacy policy](PRIVACY.md). In short: no server, nothing collected, nothing sent anywhere.
 - Rebuilding a streamed video holds the finished file in memory before saving it, so a very long video needs that much free memory.
 
 ## Licence

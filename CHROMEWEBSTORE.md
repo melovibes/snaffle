@@ -1,0 +1,213 @@
+# Chrome Web Store Listing: Snaffle
+
+> Last Updated: 2026-11-16
+>
+> Everything the Developer Dashboard asks for, in one place, ready to copy across.
+> This file is not shipped in the extension. Fields marked **TO FILL** need you.
+
+## Store Listing
+
+**Extension Name**
+
+Snaffle
+
+**Short Description** (127 of 132 characters; the same text as the manifest)
+
+Save the image or video under your pointer with a key or click. Rebuilds streamed video, captures full pages, bulk-saves media.
+
+**Detailed Description** (plain text; the store strips formatting)
+
+```
+Snaffle saves the image or video under your mouse pointer with one key press or one click. No right-click menu, no "open image in new tab", no hunting for the file.
+
+Point at a picture, press Alt + S, and it is in your Downloads folder. You choose the keys and the mouse button yourself.
+
+WHAT IT DOES
+
+Save what you point at. Hover over any image or video and press your key or click your mouse combination. Snaffle works out what is under the pointer, including pictures used as backgrounds and media inside embedded frames.
+
+Gets the best version. When a page shows a small preview of a larger picture, Snaffle saves the larger one. If the site refuses, it falls back to the version the page itself is showing.
+
+Saves streamed video as one file. Many sites play video in small pieces rather than as one file. Once a video has started playing, Snaffle can put the pieces back together into a single video file with its sound, and shows progress while it works.
+
+Captures the whole page. Alt + Shift + S takes a picture of the entire page, top to bottom, not just what fits in the window. It opens for you to check, then you save it as PNG, JPEG or PDF, or copy it. Headers that stay fixed while you scroll appear once, not on every screen.
+
+Lists everything on the page. Alt + Shift + I shows every image and video on the page in one grid. Filter by size or type, tick the ones you want, and download them together.
+
+Files go where you want them. Choose the folder and the file-name pattern, using the site name, the page title, the date and more. By default each site gets its own folder inside Downloads/Snaffle.
+
+Honest feedback. A small message says what was saved and where, with a button to show it in its folder. If a save fails, the message says why.
+
+HOW TO USE IT
+
+1. Hover over an image or video.
+2. Press Alt + S, or hold Alt and click the middle mouse button.
+3. The file is saved to your Downloads folder.
+
+To change the keys, the mouse button, the folder or the file names, open the options page from the toolbar icon. The toolbar icon also has an on/off switch.
+
+PRIVACY
+
+Snaffle has no server and no account. It collects nothing, tracks nothing and sends nothing to anyone. Everything happens in your browser and everything you save goes straight to your own disk. It needs access to all sites because the media you may want can be on any page.
+
+GOOD TO KNOW
+
+Snaffle cannot save video that is copy-protected (DRM), and Chrome does not allow any extension to run on its own settings pages or on the Chrome Web Store.
+
+Please save only what you have the right to save, and respect the terms of the sites you use.
+
+Snaffle is free and open source. Source code, documentation and issue tracker: https://github.com/melovibes/snaffle
+```
+
+**Category**
+
+Tools (in the Productivity group). The dashboard's own list is the authority if it has changed.
+
+**Single Purpose**
+
+Save images and video from the web page you are viewing, including a picture of the whole page.
+
+**Primary Language**
+
+English
+
+## Graphics & Assets
+
+All in `store-assets/`, retaken any time with `npm run store:shots`.
+
+| Asset | Dimensions | Status | Filename |
+|-------|-----------|--------|----------|
+| Store Icon | 128×128 PNG | ✅ Ready | `icons/icon128.png` |
+| Screenshot 1 | 1280×800 | ✅ Ready | `store-assets/screenshot-1-save.png` |
+| Screenshot 2 | 1280×800 | ✅ Ready | `store-assets/screenshot-2-media-list.png` |
+| Screenshot 3 | 1280×800 | ✅ Ready | `store-assets/screenshot-3-full-page.png` |
+| Screenshot 4 | 1280×800 | ✅ Ready | `store-assets/screenshot-4-settings.png` |
+| Screenshot 5 | 1280×800 | ⬜ Not created | optional |
+| Small Promo Tile | 440×280 | ✅ Ready | `store-assets/promo-small-440x280.png` |
+| Marquee Promo Tile | 1400×560 | ⬜ Not created | optional; only used if the store features the extension |
+
+### Screenshot Notes
+
+1. **Save what you point at.** The pointer over a picture, the keys pressed, and the message naming the saved file.
+2. **Everything on the page.** The media list with three pictures ticked and "Download 3".
+3. **The whole page.** A full-page capture on the page it opens in, with Save as PNG, JPEG, PDF and Copy.
+4. **Your keys, your folders.** The options page: the four triggers and where files go.
+
+The screenshots are of the real extension running on a made-up demo page ("Coastline") whose pictures are generated by the test server, so no third-party site, logo or photograph appears in them. Two things are drawn in by the script because a still picture cannot show them: the mouse pointer, and in screenshot 1 a label naming the keys. Nothing else is staged.
+
+## Permissions Justification
+
+One box per permission in the dashboard. Each of these is written to be pasted in.
+
+| Permission | Type | Justification |
+|------------|------|---------------|
+| `downloads` | permissions | Saves the image, video or screenshot the user asked for into their Downloads folder, under the folder and file name they chose in the options. Also used to check that a download really finished before telling the user it was saved, and for the "Show in folder" button. |
+| `storage` | permissions | Remembers the user's settings: their trigger keys and mouse button, folder and file-name patterns, and options. Also holds short-lived working notes in session memory (downloads still in progress, and video playlists seen in this session) that are cleared when the browser closes. |
+| `contextMenus` | permissions | Adds one item, "Save with Snaffle", to the right-click menu on images and video, as an alternative to the keyboard and mouse triggers. The user can turn it off. |
+| `webRequest` | permissions | Observes, without blocking or changing anything, requests for video playlists. A streamed video has no single file address, so the playlist the page requested is the only way to save that video when the user asks. The addresses are kept in memory for this session only, for at most two hours, and are never sent anywhere. |
+| `scripting` | permissions | Loads the extension's own bundled scripts into a tab: so that it works in tabs that were already open when it was installed or updated, and so that the screenshot and media-list code is loaded only when the user asks for those features rather than into every page. No remote code is loaded. |
+| `offscreen` | permissions | Opens a hidden page that joins the pieces of a streamed video into one file and holds large files while they are being saved. The background service worker cannot do this itself, because it cannot hold a file in memory for a download and may be stopped during a long one. |
+| `declarativeNetRequestWithHostAccess` | permissions | Some video sites only send video to requests that carry the address of the page the video is on. While a video the user asked for is being saved, a temporary session rule adds that address to the extension's own requests to that one site, and is removed when the save ends. It applies only to requests made by the extension itself. It blocks nothing and changes no request made by any web page. |
+| `<all_urls>` | host_permissions | The user chooses what to save by pointing at it on whatever page they are on, so the extension has to be able to see the element under the pointer on any site. Media is also commonly served from a different address than the page showing it, so saving it needs access to that address too, and capturing a full-page screenshot needs access to the page being captured. `activeTab` cannot be used instead, because the triggers are a key press or mouse click inside the page, which the user assigns themselves, and those do not grant `activeTab`. |
+| content script on `<all_urls>`, all frames | content_scripts | Tracks which element the mouse pointer is over, so that the user's trigger saves the right image or video, including media inside embedded frames. It reads nothing from the page until the user triggers a save, and shows the confirmation message. |
+
+**Remote code:** No. All code is in the package. The one third-party library (Mediabunny 1.65.2, `vendor/mediabunny.min.mjs`) is bundled unmodified; it is minified as published by its authors in the `mediabunny` npm package, not obfuscated, and it is open source (https://mediabunny.dev, MPL-2.0).
+
+## Privacy & Data Use
+
+### Data Collection
+
+**Does the extension collect user data?** No.
+
+Snaffle has no server and makes no request to its developer or to any third party. The only network requests it makes are to fetch the media the user asked to save, from the site that hosts it.
+
+| Data Type | Collected? | Transmitted Off-Device? | Purpose | Shared with Third Parties? |
+|-----------|-----------|------------------------|---------|---------------------------|
+| Personally identifiable info | No | No | | No |
+| Health info | No | No | | No |
+| Financial info | No | No | | No |
+| Authentication info | No | No | | No |
+| Personal communications | No | No | | No |
+| Location | No | No | | No |
+| Web history | No | No | Playlist addresses are held in session memory for up to two hours so a streamed video can be saved; never stored on disk or sent anywhere | No |
+| User activity | No | No | The pointer position is used in the page to know what to save; not recorded | No |
+| Website content | No | No | The image, video or page the user chooses is saved to the user's own disk | No |
+
+One thing to state rather than hide: settings are kept in `chrome.storage.sync`, so with Chrome sync on, Google stores them with the user's Google account. They are preferences only (keys, folder patterns, options). The privacy policy says so.
+
+**A judgement call for you.** The dashboard asks which kinds of data the extension "collects". Snaffle handles website content and playlist addresses on the device and never sends them anywhere, which I have read as "not collected", and ticked nothing. If a reviewer disagrees, the fix is to tick "Website content" and "Web history" and keep the same explanation; nothing in the code would need to change.
+
+### Data Use Certification
+
+- [x] Data is NOT sold to third parties
+- [x] Data is NOT used for purposes unrelated to the extension's core functionality
+- [x] Data is NOT used for creditworthiness or lending purposes
+
+## Privacy Policy
+
+**Privacy Policy URL**
+
+https://github.com/melovibes/snaffle/blob/main/PRIVACY.md
+
+The policy is `PRIVACY.md` in this repository. The link is live once this branch is on `main`. Open it yourself before submitting; a dead link is rejected automatically.
+
+## Distribution
+
+**Visibility**: Public (or start Unlisted to try the install flow first, then switch)
+**Regions**: All regions
+
+## Developer Info
+
+**Publisher Name**: melovibes
+
+**Contact Email**: **TO FILL.** Shown publicly on the listing, and where Google sends policy notices, so it must be one you read. Consider a dedicated address rather than a personal one.
+
+**Support URL**: https://github.com/melovibes/snaffle/issues
+
+**Homepage URL**: https://github.com/melovibes/snaffle
+
+## Package
+
+Upload `dist/snaffle-<version>-store.zip`, built and load-tested with:
+
+```
+npm run package:store
+```
+
+It has `manifest.json` at the top level and holds only what Chrome runs plus the licences: no README, tests, tools or this file. It is built from the last commit, so commit first. (The other zip, `snaffle-<version>.zip`, is the GitHub release for people who load the extension unpacked; do not upload that one.)
+
+## Version History
+
+| Version | Date | Changes | Status |
+|---------|------|---------|--------|
+| 1.4.1 | 2026-11-16 | First version prepared for the store. Hover-save by key or click, streamed video saved as one file, full-page screenshots with a results page, media list for bulk download. | Draft |
+
+## Review Notes
+
+### Before you submit
+
+- [ ] Register a Chrome Web Store developer account (one-time US$5 fee; Google requires 2-step verification on the account).
+- [ ] Fill in the contact email above and in the dashboard.
+- [ ] Open the privacy policy URL and confirm it loads.
+- [ ] Load `snaffle-<version>-store.zip` unpacked in your own Chrome and try each feature once.
+- [ ] Decide the YouTube question below.
+
+### Known Issues / Limitations a reviewer may raise
+
+**Saving video.** This is the main risk. The store has long refused extensions that download video from YouTube, and looks hard at anything that saves streamed video. Where Snaffle stands, as facts:
+
+- It cannot save DRM-protected video, and says so.
+- It saves a streamed video only when the page has requested an HLS playlist (`.m3u8`), or a whole `.mp4` from one video host it knows about. It has no YouTube-specific code.
+- It has not been tested on YouTube. I have not verified what it does there.
+
+The safe course, if you want the listing to survive review, is to make the stream rebuild refuse on YouTube outright and say so in the description. That is a small code change and a decision for you; it has not been made.
+
+**Broad access.** `<all_urls>` and `webRequest` put the extension into the store's in-depth review, which takes longer than the usual few days. The justifications above are the answer; expect to be asked.
+
+**Single purpose.** Hover-save, the media list and the full-page screenshot are all "save media from this page", and the listing is written that way. If a reviewer sees the screenshot as a second purpose, the options are to argue it (a page capture is an image of the page) or to split it out.
+
+**Icon.** The store's guidance is artwork of about 96×96 inside a 128×128 image with transparent padding. Ours fills the square with rounded corners. It is accepted as it is, but will look slightly larger than its neighbours in the store.
+
+### Rejection History
+
+None yet.

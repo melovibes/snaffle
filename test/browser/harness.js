@@ -39,7 +39,7 @@ async function launch(opts) {
     downloadsPath: dlDir,
     // Chromium's own screen recording of every page, for the demo.
     recordVideo: o.video ? { dir: o.video, size: { width: o.width, height: o.height } } : undefined,
-    args: ['--disable-extensions-except=' + extDir, '--load-extension=' + extDir]
+    args: ['--disable-extensions-except=' + extDir, '--load-extension=' + extDir].concat(o.args || [])
   });
 
   let sw = context.serviceWorkers()[0];

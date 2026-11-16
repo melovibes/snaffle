@@ -9,7 +9,9 @@
     "test:browser": "node test/browser/run.js",
     "package": "node tools/make-zip.js",
     "shots": "node test/browser/shots.js",
-    "demo": "node test/browser/demo.js"
+    "demo": "node test/browser/demo.js",
+    "store:shots": "node test/browser/store-shots.js",
+    "package:store": "node tools/make-zip.js --store --check"
   },
   "devDependencies": {
     "eslint": "^9.39.5",

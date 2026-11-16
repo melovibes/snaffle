@@ -4,6 +4,13 @@
      node tools/make-zip.js            build it
      node tools/make-zip.js --check    build it, then unzip it, load it into
                                        Chromium and make sure it starts
+     node tools/make-zip.js --store    build the zip for the Chrome Web Store
+                                       instead (combine with --check)
+
+   The release zip unpacks into a folder of its own and carries the README,
+   for people who load it unpacked. The store zip is what the Chrome Web Store
+   wants uploaded: the manifest at the top level, and only what Chrome runs
+   plus the licences.
 
    It is built with `git archive`, so it holds exactly what the commit holds.
    Uncommitted changes are not included, and the script says so. */
@@ -19,9 +26,10 @@ const git = (args) => execFileSync('git', args, { cwd: ROOT }).toString().trim()
 
 const version = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8')).version;
 const name = 'snaffle-' + version;
-const out = path.join(ROOT, 'dist', name + '.zip');
+const store = process.argv.includes('--store');
+const out = path.join(ROOT, 'dist', name + (store ? '-store' : '') + '.zip');
 
-const paths = FILES.concat(DOCS);
+const paths = store ? FILES.concat(['LICENSE']) : FILES.concat(DOCS);
 const missing = paths.filter((p) => !fs.existsSync(path.join(ROOT, p)));
 if (missing.length) { console.error('missing files: ' + missing.join(', ')); process.exit(1); }
 
@@ -29,7 +37,7 @@ const dirty = git(['status', '--porcelain', '--'].concat(paths));
 if (dirty) console.warn('note: uncommitted changes are NOT in the zip:\n' + dirty);
 
 fs.mkdirSync(path.dirname(out), { recursive: true });
-git(['archive', '--format=zip', '--prefix=' + name + '/', '-o', out, 'HEAD', '--'].concat(paths));
+git(['archive', '--format=zip'].concat(store ? [] : ['--prefix=' + name + '/'], ['-o', out, 'HEAD', '--'], paths));
 console.log('wrote ' + path.relative(ROOT, out) + ' (' + Math.round(fs.statSync(out).size / 1024) + ' KB, ' + paths.length + ' files) from ' + git(['rev-parse', '--short', 'HEAD']));
 
 if (!process.argv.includes('--check')) process.exit(0);
@@ -40,12 +48,16 @@ if (!process.argv.includes('--check')) process.exit(0);
   const { chromium } = require('playwright');
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'snaffle-zip-'));
   try {
+    const into = path.join(work, 'unzipped');
     if (process.platform === 'win32') {
-      execFileSync('powershell', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath "' + out + '" -DestinationPath "' + work + '"']);
+      execFileSync('powershell', ['-NoProfile', '-Command', 'Expand-Archive -LiteralPath "' + out + '" -DestinationPath "' + into + '"']);
     } else {
-      execFileSync('unzip', ['-q', out, '-d', work]);
+      execFileSync('unzip', ['-q', out, '-d', into]);
     }
-    const ext = path.join(work, name);
+    // The store zip has the manifest at its top level; the release zip has
+    // one folder holding everything.
+    const ext = store ? into : path.join(into, name);
+    if (!fs.existsSync(path.join(ext, 'manifest.json'))) throw new Error('manifest.json is not where it should be in the zip');
     const unpacked = fs.readdirSync(ext);
 
     const context = await chromium.launchPersistentContext(path.join(work, 'profile'), {
