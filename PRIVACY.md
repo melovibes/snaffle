@@ -1,6 +1,6 @@
 # Privacy Policy for Snaffle
 
-Last updated: 16 November 2026
+Last updated: 17 November 2026
 
 Snaffle is a Chrome extension that saves images, video and page screenshots from the web page you are viewing. This policy says what it handles, where that stays, and what it never does.
 
@@ -16,7 +16,7 @@ Snaffle has no server. It does not collect, sell or share any information about 
 
 **A counter.** A running number, used for the `{index}` part of a file name if you use it, is kept on this computer.
 
-**Video addresses seen in this session.** A streamed video has no single file to save, so Snaffle notes the addresses of the video playlists that pages request, in order to rebuild a video when you ask for one. These notes are held in the browser's memory only. They are dropped after two hours, capped at 120 entries, erased when Chrome closes, and never written to disk or sent anywhere.
+**Video addresses seen in this session.** A streamed video has no single file to save, so Snaffle notes the addresses of the video playlists that pages request, and on sites that serve a video as separate picture and sound files (Instagram is one) the addresses of those files, in order to rebuild a video when you ask for one. These notes are held in the browser's memory only. They are dropped after two hours, capped at a few hundred entries, erased when Chrome closes, and never written to disk or sent anywhere.
 
 **Downloads in progress.** While a download is still arriving, Snaffle remembers which tab asked for it so that it can report a late failure there. This is also held in memory only and cleared when the download ends or Chrome closes.
 

@@ -4,7 +4,7 @@
 
 const FILES = [
   'manifest.json',
-  'shared.js', 'hls.js', 'pdf.js', 'background.js', 'content.js', 'capture.js', 'gallery.js',
+  'shared.js', 'hls.js', 'tracks.js', 'pdf.js', 'background.js', 'content.js', 'capture.js', 'gallery.js',
   'offscreen.html', 'offscreen.js',
   'result.html', 'result.js', 'result.css',
   'options.html', 'options.js', 'options.css',

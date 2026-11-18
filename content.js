@@ -53,6 +53,15 @@
     if (!e.relatedTarget) pointerInside = false;
   }, capture);
 
+  // A page that rebuilds what is under a still pointer can produce a mouseout
+  // with no related target, which reads as the pointer having left. :hover is
+  // the browser's own answer to whether it is still over this document.
+  const pointerHere = () => {
+    if (pointerInside) return true;
+    try { if (document.documentElement.matches(':hover')) pointerInside = true; } catch (_) {}
+    return pointerInside;
+  };
+
   // The pointer is over an embedded frame, whose contents this frame cannot see.
   const overFrame = () => !!hoverTarget && /^(IFRAME|FRAME)$/.test(hoverTarget.tagName || '');
 
@@ -106,18 +115,42 @@
 
   // Media the pointer is geometrically over, even if it cannot be hit-tested:
   // sites put pointer-events:none on images to defeat "save image as".
-  function mediaAround(root, x, y) {
-    let best = null, bestArea = Infinity;
+  // Smallest first: the smallest thing the pointer is inside is the most
+  // specific. All of them are returned, because the smallest may turn out to
+  // be an empty placeholder with something real behind it.
+  function mediaAllAround(root, x, y) {
+    const found = [];
     let list = [];
     try { list = root.querySelectorAll('img, video, canvas'); } catch (_) {}
     for (const el of list) {
       const r = el.getBoundingClientRect();
       if (!r.width || !r.height) continue;
       if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
-      const area = r.width * r.height;
-      if (area < bestArea) { best = el; bestArea = area; }
+      found.push({ el, area: r.width * r.height });
     }
-    return best;
+    return found.sort((a, b) => a.area - b.area).map((f) => f.el);
+  }
+
+  const mediaAround = (root, x, y) => mediaAllAround(root, x, y)[0] || null;
+
+  // Does this video have anything in it yet? One that has not been started
+  // is only a box; its cover picture is all there is to save.
+  const hasMedia = (v) => v.readyState > 0 || !!v.srcObject || !!(v.currentSrc || v.getAttribute('src'));
+
+  // A player's cover picture lies exactly over its video, and stays there
+  // while the video plays underneath. Pointing at it is pointing at the video.
+  function videoBehind(el, stack) {
+    if (!el || !el.getBoundingClientRect) return null;
+    const a = el.getBoundingClientRect();
+    const candidates = stack.concat(mediaAllAround(document, cursor.x, cursor.y));
+    for (const v of candidates) {
+      if ((v.tagName || '') !== 'VIDEO' || v === el || !hasMedia(v)) continue;
+      const b = v.getBoundingClientRect();
+      const same = Math.abs(a.left - b.left) <= 4 && Math.abs(a.top - b.top) <= 4 &&
+                   Math.abs(a.width - b.width) <= 8 && Math.abs(a.height - b.height) <= 8;
+      if (same) return v;
+    }
+    return null;
   }
 
   function elementStack() {
@@ -290,7 +323,12 @@
       if (direct && !direct.startsWith('blob:')) url = direct;
     }
     const poster = abs(v.poster, v);
-    if (!url) return poster ? { url: poster, kind: 'image', el: v } : null;
+    if (!url) {
+      // A player can feed a video without ever giving it an address. It is
+      // still a video, and still what the user is pointing at.
+      if (v.srcObject || v.readyState > 0) return { url: '', kind: 'video', el: v, poster, stream: true };
+      return poster ? { url: poster, kind: 'image', el: v } : null;
+    }
     if (url.startsWith('blob:')) return { url, kind: 'video', el: v, poster };
     const up = upgrade(url);
     return { url: up, alts: fallbacks([url], up), kind: 'video', el: v, poster };
@@ -378,8 +416,16 @@
       }
     }
     if (!hit) {
-      const loose = mediaAround(document, cursor.x, cursor.y);
-      if (loose) hit = mediaFrom(loose);
+      for (const loose of mediaAllAround(document, cursor.x, cursor.y)) {
+        hit = mediaFrom(loose);
+        if (hit) break;
+      }
+    }
+    if (hit && hit.kind === 'image' && !hit.make) {
+      const v = videoBehind(hit.el, stack);
+      const under = v && fromVideo(v);
+      // The cover is kept as the poster, for when the video cannot be saved.
+      if (under && under.kind === 'video') hit = Object.assign({}, under, { poster: under.poster || hit.url });
     }
 
     // A thumbnail wrapped in a link to the real file: take the file, and keep
@@ -427,6 +473,8 @@
           const who = hit.el && statusInfo(hit.el);
           if (who) name = who.user + '-' + who.id;
         }
+        const ig = hit.el && instagramInfo(hit.el);
+        if (ig) name = ig.name;
         if (!name) name = p.hostname;
       } catch (_) { name = 'media'; }
     }
@@ -753,6 +801,58 @@
     return null;
   }
 
+  // The same for Instagram, where a file's own name is a long number: the
+  // account, the post's short code, and which picture of the post it is, so
+  // that a saved file can be traced back to where it came from.
+  const IG_POST = /^\/(?:([A-Za-z0-9._]+)\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/;
+  const IG_NOT_A_USER = /^(p|reel|reels|tv|explore|accounts|direct|stories|about|legal|web|api)$/i;
+
+  function instagramInfo(el) {
+    if (!/(^|\.)instagram\.com$/i.test(location.hostname)) return null;
+    const read = (href) => {
+      try {
+        const m = IG_POST.exec(new URL(href, location.href).pathname);
+        return m ? { user: m[1] && !IG_NOT_A_USER.test(m[1]) ? m[1] : '', id: m[2] } : null;
+      } catch (_) { return null; }
+    };
+
+    // On a post's own page the address says which post it is. In a feed it
+    // is the nearest enclosing post that links to itself.
+    let post = read(location.href);
+    let index = post ? new URL(location.href).searchParams.get('img_index') || '' : '';
+    let scope = null;
+    if (!post) {
+      let node = el;
+      for (let i = 0; i < 16 && node && !post; i++, node = node.parentElement) {
+        if (!node.querySelectorAll) continue;
+        for (const a of node.querySelectorAll('a[href]')) {
+          post = read(a.getAttribute('href'));
+          if (post) { scope = node; break; }
+        }
+      }
+      index = '';
+    }
+    if (!post) return null;
+
+    if (!post.user) {
+      // The page's own canonical address often carries the account name.
+      for (const sel of ['link[rel="canonical"]', 'meta[property="og:url"]']) {
+        const tag = document.querySelector(sel);
+        const other = tag && read(tag.getAttribute('href') || tag.getAttribute('content') || '');
+        if (other && other.id === post.id && other.user) { post.user = other.user; break; }
+      }
+    }
+    if (!post.user) {
+      // Otherwise the first link to a profile in the post is its author.
+      for (const a of (scope || document).querySelectorAll('a[href]')) {
+        const m = /^\/([A-Za-z0-9._]+)\/?$/.exec(a.getAttribute('href') || '');
+        if (m && !IG_NOT_A_USER.test(m[1])) { post.user = m[1]; break; }
+      }
+    }
+    const name = [post.user, post.id, /^\d+$/.test(index) ? index : ''].filter(Boolean).join('-');
+    return { user: post.user, id: post.id, index, name };
+  }
+
   const hostToken = () => location.hostname.replace(/^www\./, '');
 
   // Stream jobs this tab has running. The service worker tells every frame
@@ -766,11 +866,14 @@
   async function grabStream(videoEl) {
     const mediaId = streamMediaId(videoEl);
     const who = statusInfo(videoEl);
+    const ig = instagramInfo(videoEl);
     const tokens = {
-      name: who ? who.user + '-' + who.id : (mediaId ? 'video-' + mediaId : 'video'),
+      name: ig ? ig.name : who ? who.user + '-' + who.id : (mediaId ? 'video-' + mediaId : 'video'),
       ext: 'mp4', kind: 'video', host: hostToken(), title: document.title || '', alt: ''
     };
-    const res = await ask({ type: 'grabStream', mediaId, tokens, pageUrl: location.href });
+    // The video's length helps tell it from the others a feed has loaded.
+    const duration = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
+    const res = await ask({ type: 'grabStream', mediaId, tokens, duration, pageUrl: location.href });
     if (!res || !res.found) return false;
 
     // The page was given a whole file after all.
@@ -833,7 +936,7 @@
 
     // Streamed (MSE) video: its blob URL is not fetchable, so rebuild it from
     // the HLS playlist the player used. Poster frame is the last resort.
-    if (hit.kind === 'video' && hit.url.startsWith('blob:') && !(await canFetch(hit.url))) {
+    if (hit.kind === 'video' && (hit.stream || (hit.url.startsWith('blob:') && !(await canFetch(hit.url))))) {
       if (cfg.streamAssembly !== false && hit.el) {
         flash(hit.el);
         if (await grabStream(hit.el)) return;
@@ -887,7 +990,7 @@
     alive,
     retire() { dead = true; if (shadowHost) shadowHost.remove(); },
     ui, toast, dismissToast, showAction, flash, ask, pageDownload, toBase64, saveBlob, savedText, announce, fallback,
-    resolve, elementStack, ancestors, tokensFor, statusInfo, hostToken,
+    resolve, elementStack, ancestors, tokensFor, statusInfo, instagramInfo, hostToken,
     fromImg, fromVideo, fromBackground, linkFor, fallbacks,
     abs, upgrade, parseSrcset, grab,
     capture: null,        // set by capture.js when it is loaded on demand
@@ -919,7 +1022,7 @@
   // the frame the pointer is in. If the pointer is not here, hand the grab to
   // the frame that has it rather than acting on a stale position.
   function keyGrab() {
-    if (pointerInside && !overFrame()) { grab(); return; }
+    if (pointerHere() && !overFrame()) { grab(); return; }
     ask({ type: 'relayGrab' }).then((r) => {
       if (!r || !r.handled) toast('No image or video under the cursor', 'warn');
     });
@@ -1004,7 +1107,7 @@
     if (msg.type === 'grabNow') {
       // Broadcast to every frame. Only the one the pointer is in answers, so
       // the sender can tell whether anybody took it.
-      if (!pointerInside || overFrame()) return false;
+      if (!pointerHere() || overFrame()) return false;
       grab();
       send({ handled: true });
     } else if (msg.type === 'downloadFailed') {

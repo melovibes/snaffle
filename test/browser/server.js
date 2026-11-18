@@ -4,6 +4,7 @@
    trusting what the UI claims. */
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { PNG } = require('pngjs');
@@ -115,11 +116,15 @@ function fakeHls(vid, file) {
   return null;
 }
 
-function start(port, peerPort) {
+// `secure`, when given, also serves the same pages over HTTPS:
+//   { key, cert, port, peerPort }
+// Chrome will only speak HTTPS to some well-known names, Instagram's among
+// them, so a fixture served under such a name has to be on this side.
+function start(port, peerPort, secure) {
   const log = [];
   let slowMs = 0;   // per-segment delay for /real and /guarded, set by a test
 
-  const server = http.createServer((req, res) => {
+  const handler = (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1:' + port);
     const p = url.pathname;
     log.push({ path: p, search: url.search, referer: req.headers.referer || '', t: Date.now() });
@@ -206,6 +211,37 @@ function start(port, peerPort) {
       if (fs.existsSync(file)) return send(200, TYPES[path.extname(file)] || 'application/octet-stream', fs.readFileSync(file));
     }
 
+    // A CDN that serves video the way Instagram's does: each track is one
+    // whole file, asked for a byte range at a time through the address.
+    //   /o1/v/t2/f2/<set>/<name>.mp4?...&oh=<signature>&bytestart=&byteend=
+    // The signature must arrive exactly as the page wrote it. The set
+    // `strict` refuses a request for the whole file and hands out at most
+    // 50,000 bytes at a time, to exercise the range-by-range route.
+    if ((m = /^\/o1\/v\/t2\/f2\/([a-z0-9]+)\/([a-z-]+)\.mp4$/.exec(p))) {
+      if (!/[?&]oh=00_Af-x%2By(&|$)/.test(req.url)) return send(403, 'text/plain', 'bad signature', CORS);
+      const alias = { 'v-other': 'v-lo', 'a-other': 'a' };
+      const file = path.join(MEDIA, 'ig', (alias[m[2]] || m[2]) + '.mp4');
+      if (!fs.existsSync(file)) return send(404, 'text/plain', 'missing', CORS);
+      const all = fs.readFileSync(file);
+      const strict = m[1] === 'strict';
+      if (!url.searchParams.has('bytestart')) {
+        return strict ? send(403, 'text/plain', 'ranges only', CORS) : send(200, 'video/mp4', all, CORS);
+      }
+      const from = Number(url.searchParams.get('bytestart'));
+      let to = Math.min(all.length - 1, Number(url.searchParams.get('byteend')));
+      if (!(from >= 0) || from >= all.length) return send(416, 'text/plain', 'past the end', CORS);
+      if (strict) to = Math.min(to, from + 49999);
+      return send(200, 'video/mp4', all.subarray(from, to + 1), CORS);
+    }
+    // A page at an Instagram-shaped address, for the naming rules.
+    if (/^\/(?:[A-Za-z0-9._]+\/)?(?:reel|p)\/[A-Za-z0-9_-]+\/?$/.test(p)) {
+      const html = fs.readFileSync(path.join(FIXTURES, 'ig.html'), 'utf8')
+        .replace(/\{\{CDN\}\}/g, secure
+          ? 'https://scontent-test-1.cdninstagram.com:' + secure.peerPort
+          : 'http://scontent-test-1.cdninstagram.com:' + peerPort);
+      return send(200, TYPES['.html'], html);
+    }
+
     // Static fixture pages. {{A}} and {{B}} become the two origins.
     if ((m = /^\/pages\/([a-z0-9-]+\.html)$/.exec(p))) {
       const file = path.join(FIXTURES, m[1]);
@@ -220,19 +256,31 @@ function start(port, peerPort) {
     if (p === '/favicon.ico') return send(204, 'image/x-icon', '');
 
     send(404, 'text/plain', 'not found: ' + p);
-  });
+  };
+
+  const server = http.createServer(handler);
+  const tls = secure ? https.createServer({ key: secure.key, cert: secure.cert }, handler) : null;
+  const listening = (srv, at) => new Promise((r) => srv.listen(at, '127.0.0.1', r));
+  const closed = (srv) => new Promise((r) => { if (srv.closeAllConnections) srv.closeAllConnections(); srv.close(r); });
 
   return new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => resolve({
+    Promise.all([listening(server, port)].concat(tls ? [listening(tls, secure.port)] : [])).then(() => resolve({
       port,
       origin: 'http://127.0.0.1:' + port,
       log,
       mark: () => log.length,
       slow: (ms) => { slowMs = ms; },
       since: (mark) => log.slice(mark),
-      close: () => new Promise((r) => server.close(r))
+      close: () => Promise.all([closed(server)].concat(tls ? [closed(tls)] : []))
     }));
   });
 }
 
-module.exports = { start, solidPng };
+// A certificate made on the spot and trusted by nobody. The test browser is
+// told to accept it; it never leaves this machine.
+async function throwawayCert() {
+  const made = await require('selfsigned').generate([{ name: 'commonName', value: 'snaffle-test' }], { days: 2, keySize: 2048 });
+  return { key: made.private, cert: made.cert };
+}
+
+module.exports = { start, solidPng, throwawayCert };

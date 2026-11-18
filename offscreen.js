@@ -5,7 +5,8 @@
    it does three jobs for the service worker:
 
      - rebuild a streamed video into one MP4, including streams that keep audio
-       in a separate track (via the bundled Mediabunny library);
+       in a separate track, and sites that serve picture and sound as two
+       separate files (via the bundled Mediabunny library);
      - fetch a file the browser's own downloader was refused;
      - receive bytes a page is holding (a canvas, a screenshot) in chunks.
 
@@ -17,9 +18,12 @@ import * as MB from './vendor/mediabunny.min.mjs';
 
 const S = globalThis.SnaffleShared;
 const H = globalThis.SnaffleHls;
+const T = globalThis.SnaffleTracks;
 
 const MAX_SEGMENTS = 1200;                 // fallback joiner only: about an hour
 const MAX_UPLOAD = 2 * 1024 * 1024 * 1024; // bytes a page may push for one file
+const MAX_TRACK = 2 * 1024 * 1024 * 1024;  // one track of a video, fetched in ranges
+const TRACK_STEP = 2 * 1024 * 1024;        // the size of each range
 
 const jobs = new Map();    // stream job id -> { tabId, cancel }
 const blobs = new Set();   // blob URLs handed out and not yet released
@@ -208,6 +212,167 @@ async function viaJoin(info, ctl) {
   return { ok: true, url: keep(blob), size: blob.size, ext: ts ? 'ts' : 'mp4', height: info.height, joined: true };
 }
 
+/* ------------------------------------------- video in separate whole files */
+
+// One track, complete. The address without its byte range usually answers
+// with the whole file. If that is refused, it is asked for the way the
+// player asks: a range at a time, in order, until the file runs out.
+async function fetchTrack(url, ctl, onBytes) {
+  const get = fetcher(ctl);
+  let r = null;
+  try { r = await get(url); } catch (e) { if (ctl.cancelled) throw e; }
+  if (r && r.status === 200 && r.body) {
+    const total = Number(r.headers.get('content-length')) || 0;
+    const parts = [];
+    const reader = r.body.getReader();
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+      onBytes(value.length, got === value.length ? total : 0);
+    }
+    if (got) return new Blob(parts, { type: 'video/mp4' });
+  }
+
+  const parts = [];
+  for (let start = 0; start < MAX_TRACK;) {
+    if (ctl.cancelled) throw new Error('cancelled');
+    const p = await get(T.ranged(url, start, start + TRACK_STEP - 1));
+    if (!p.ok) {
+      if (parts.length) break;      // past the end of the file
+      throw new Error(p.status === 403 ? 'the site refused the video' : 'the video answered ' + p.status);
+    }
+    const buf = await p.arrayBuffer();
+    if (!buf.byteLength) break;
+    parts.push(buf);
+    onBytes(buf.byteLength, 0);
+    // A server may send less than it was asked for. The next range starts
+    // where this one really ended, and the file is over when nothing comes.
+    start += buf.byteLength;
+  }
+  if (!parts.length) throw new Error('the site sent an empty video');
+  return new Blob(parts, { type: 'video/mp4' });
+}
+
+// Picture from one file and sound from another, written as one MP4. The
+// packets are copied as they are, so nothing is re-encoded and nothing is
+// lost. Which file holds which is read from the files, not assumed.
+async function mergeTracks(files, ctl, onStep) {
+  const inputs = files.map((b) => new MB.Input({ source: new MB.BlobSource(b), formats: MB.ALL_FORMATS }));
+  try {
+    let vTrack = null, aTrack = null;
+    for (const input of inputs) {
+      if (!vTrack) vTrack = await input.getPrimaryVideoTrack();
+    }
+    for (const input of inputs) {
+      if (!aTrack) aTrack = await input.getPrimaryAudioTrack();
+    }
+    if (!vTrack) throw new Error('none of the files holds a picture');
+
+    const output = new MB.Output({
+      format: new MB.Mp4OutputFormat({ fastStart: 'in-memory' }),
+      target: new MB.BufferTarget()
+    });
+    const lanes = [];
+    const vSource = new MB.EncodedVideoPacketSource(vTrack.codec);
+    output.addVideoTrack(vSource);
+    lanes.push({ sink: new MB.EncodedPacketSink(vTrack), source: vSource, config: await vTrack.getDecoderConfig(), first: true });
+    if (aTrack) {
+      const aSource = new MB.EncodedAudioPacketSource(aTrack.codec);
+      output.addAudioTrack(aSource);
+      lanes.push({ sink: new MB.EncodedPacketSink(aTrack), source: aSource, config: await aTrack.getDecoderConfig(), first: true });
+    }
+
+    await output.start();
+    const length = (await vTrack.computeDuration()) || 0;
+    for (const l of lanes) l.packet = await l.sink.getFirstPacket();
+    // Always feed whichever track is furthest behind, so picture and sound
+    // stay side by side in the file.
+    for (let n = 0; ; n++) {
+      const live = lanes.filter((l) => l.packet);
+      if (!live.length) break;
+      if (ctl.cancelled) throw new Error('cancelled');
+      const l = live.reduce((a, b) => (a.packet.timestamp <= b.packet.timestamp ? a : b));
+      await l.source.add(l.packet, l.first ? { decoderConfig: l.config } : undefined);
+      l.first = false;
+      if (length && n % 50 === 0) onStep(Math.min(1, l.packet.timestamp / length));
+      l.packet = await l.sink.getNextPacket(l.packet);
+    }
+    await output.finalize();
+    return { buffer: output.target.buffer, height: await vTrack.getDisplayHeight(), sound: !!aTrack };
+  } finally {
+    for (const input of inputs) { try { if (input.dispose) input.dispose(); } catch (_) {} }
+  }
+}
+
+async function tracksWork(job, ctl, report) {
+  const urls = [job.video].concat(job.audio ? [job.audio] : []);
+  // Fetching is nine tenths of the bar; the merge is quick.
+  let got = 0, total = 0, knownTotals = 0;
+  const onBytes = (n, size) => {
+    got += n;
+    if (size) { total += size; knownTotals++; }
+    if (knownTotals === urls.length && total) report(Math.min(90, Math.round((got / total) * 90)));
+  };
+  const files = await Promise.all(urls.map((u) => fetchTrack(u, ctl, onBytes)));
+  if (ctl.cancelled) throw new Error('cancelled');
+  report(90);
+
+  try {
+    const made = await mergeTracks(files, ctl, (p) => report(90 + Math.round(p * 9)));
+    const blob = new Blob([made.buffer], { type: 'video/mp4' });
+    return { ok: true, url: keep(blob), size: blob.size, ext: 'mp4', height: made.height, silent: urls.length > 1 && !made.sound };
+  } catch (e) {
+    if (ctl.cancelled) throw e;
+    // The files could not be read as video here. The picture file plays on
+    // its own, so it is saved as it came rather than nothing at all, and the
+    // user is told the sound is missing.
+    return { ok: true, url: keep(files[0]), size: files[0].size, ext: 'mp4', height: 0, silent: urls.length > 1 };
+  }
+}
+
+/* ------------------------------------------------------------- the job */
+
+async function hlsWork(job, ctl, report) {
+  let result;
+  const info = await inspect(job, ctl);
+  if (info.live) throw new Error('This is a live stream, which has no end to save.');
+  if (/SAMPLE-AES/.test(info.key)) throw new Error('This stream is encrypted (DRM) and cannot be saved.');
+
+  // Until the converter starts reporting, progress is segments fetched out
+  // of segments expected. A split-audio stream has a second set of them, and
+  // each rendition has an init piece.
+  const perTrack = info.segs.length + (info.init ? 1 : 0);
+  const total = Math.max(1, perTrack * (info.splitAudio ? 2 : 1));
+  let pieces = 0;
+  ctl.onPiece = () => { if (!ctl.timed) report(Math.min(95, Math.round((++pieces / total) * 100))); };
+
+  try {
+    result = await viaLibrary(job, ctl);
+  } catch (libErr) {
+    if (ctl.cancelled) throw libErr;
+    // Joining is only honest when the result would still be a whole,
+    // playable file: no missing audio, nothing encrypted, an index to play by.
+    const joinable = !info.splitAudio && info.key === 'NONE' && !info.byterange &&
+      info.segs.length > 0 && info.segs.length <= MAX_SEGMENTS &&
+      (info.init || /\.ts(\?|$)/i.test(info.segs[0]));
+    if (!joinable) {
+      if (info.key !== 'NONE') throw new Error('This stream is encrypted and cannot be saved.');
+      const why = String((libErr && libErr.message) || libErr).replace(/\.$/, '');
+      // Joining the video alone would hand over a silent file as if it were whole.
+      throw new Error(info.splitAudio
+        ? 'its separate audio track could not be merged (' + why + ')'
+        : 'the stream could not be converted (' + why + ')');
+    }
+    pieces = 0;
+    ctl.timed = false;
+    result = await viaJoin(info, ctl);
+  }
+  return result;
+}
+
 async function runStream(job) {
   const ctl = { cancelled: false, conv: null, input: null, abort: new AbortController(), onPiece: null, timed: false, report: null };
   // Cancelling must end the job at once, whatever the library is in the
@@ -237,43 +402,7 @@ async function runStream(job) {
 
   ctl.report = report;
 
-  const work = async () => {
-    let result;
-    const info = await inspect(job, ctl);
-    if (info.live) throw new Error('This is a live stream, which has no end to save.');
-    if (/SAMPLE-AES/.test(info.key)) throw new Error('This stream is encrypted (DRM) and cannot be saved.');
-
-    // Until the converter starts reporting, progress is segments fetched out
-    // of segments expected. A split-audio stream has a second set of them, and
-    // each rendition has an init piece.
-    const perTrack = info.segs.length + (info.init ? 1 : 0);
-    const total = Math.max(1, perTrack * (info.splitAudio ? 2 : 1));
-    let pieces = 0;
-    ctl.onPiece = () => { if (!ctl.timed) report(Math.min(95, Math.round((++pieces / total) * 100))); };
-
-    try {
-      result = await viaLibrary(job, ctl);
-    } catch (libErr) {
-      if (ctl.cancelled) throw libErr;
-      // Joining is only honest when the result would still be a whole,
-      // playable file: no missing audio, nothing encrypted, an index to play by.
-      const joinable = !info.splitAudio && info.key === 'NONE' && !info.byterange &&
-        info.segs.length > 0 && info.segs.length <= MAX_SEGMENTS &&
-        (info.init || /\.ts(\?|$)/i.test(info.segs[0]));
-      if (!joinable) {
-        if (info.key !== 'NONE') throw new Error('This stream is encrypted and cannot be saved.');
-        const why = String((libErr && libErr.message) || libErr).replace(/\.$/, '');
-        // Joining the video alone would hand over a silent file as if it were whole.
-        throw new Error(info.splitAudio
-          ? 'its separate audio track could not be merged (' + why + ')'
-          : 'the stream could not be converted (' + why + ')');
-      }
-      pieces = 0;
-      ctl.timed = false;
-      result = await viaJoin(info, ctl);
-    }
-    return result;
-  };
+  const work = () => (job.kind === 'tracks' ? tracksWork(job, ctl, report) : hlsWork(job, ctl, report));
 
   let result;
   try {

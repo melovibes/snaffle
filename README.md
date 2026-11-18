@@ -98,6 +98,21 @@ It refuses, with a reason, when a stream is live (it has no end), or is encrypte
 
 Turn the whole thing off with **Rebuild streamed video into one file** in options, which reverts to saving the poster frame.
 
+### Instagram video
+
+Instagram has no playlist. Each post's video is a set of whole files on Instagram's CDN, one per quality with no sound in it and one that is sound only, and the player fetches each a byte range at a time by adding `bytestart` and `byteend` to its address. Saving it means fetching the right two files whole and merging them.
+
+1. The same `webRequest` listener records those range requests (on `*.cdninstagram.com` and `*.fbcdn.net`), one record per file however many ranges are asked for.
+2. The files of one post share an id carried in the address, alongside each file's bitrate, its length and whether it is sound. Snaffle picks the post whose length matches the video you are pointing at, takes its highest-bitrate picture file and its sound file, and leaves the lower qualities alone. If two posts of the same length are loaded it takes the most recent and says the result is a best guess.
+3. The worker page asks for each file by its address with the byte range taken out, which returns the whole file. The rest of the address is signed and is passed through untouched. If the whole file is refused, it is fetched a range at a time, in order, and joined.
+4. Mediabunny merges picture and sound into one MP4 by copying them as they are. Nothing is re-encoded.
+
+Files are named `account-shortcode-1080p.mp4`, and pictures saved from Instagram `account-shortcode.jpg` (with the picture's number added on a post that holds several), so a saved file can be traced back to its post.
+
+Instagram lays a cover picture exactly over each video and leaves it there while the video plays. Pointing at it counts as pointing at the video, once the video has started. Before that there is no video to save yet, and you get the cover picture.
+
+Two things to know. Instagram's best quality is usually VP9 video, which Chrome, VLC and current players handle but some older players and editors do not. And this has been checked against one public reel and a test copy of the site, not against every kind of post; stories, live video and anything that needs you signed in have not been tried.
+
 ## Full-page screenshots
 
 `Alt + Shift + S`, or the popup button. Captures the whole scrollable page, not just the window.
@@ -201,6 +216,7 @@ Nothing in this chain ever returns fetched bytes to a web page. The worker page 
 | `background.js` | service worker: decides what is downloaded and where, tracks stream playlists, loads features into tabs |
 | `offscreen.html/.js` | hidden worker page: rebuilds streamed video, holds large files as blobs |
 | `hls.js` | playlist reading for the fallback segment-joiner |
+| `tracks.js` | recognising and choosing video served as separate picture and sound files (Instagram) |
 | `vendor/mediabunny.min.mjs` | [Mediabunny](https://mediabunny.dev) 1.65.2, unmodified, MPL-2.0 (licence alongside) |
 | `capture.js` | full-page screenshot; loaded into a tab only when asked for |
 | `result.html/.css/.js` | the page a screenshot opens on, to check it and choose how to save it |
@@ -236,8 +252,8 @@ pwsh -File tools/make-icons.ps1
 ```
 npm install
 npm run lint          # ESLint over every file
-npm test              # 126 offline checks, a second or two
-npm run test:browser  # 83 checks in headless Chromium, about nine minutes; needs ffprobe on the PATH
+npm test              # 152 offline checks, a second or two
+npm run test:browser  # 91 checks in headless Chromium, about ten minutes; needs ffprobe on the PATH
 npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
 npm run shots         # retake the screenshots in docs/img
 npm run demo          # re-record docs/img/demo.gif; needs ffmpeg on the PATH
@@ -273,6 +289,8 @@ When it recognizes your trigger, Snaffle hides `pointerdown` from the page and c
 2. **Check the combination matches exactly.** The trigger requires those modifiers and no others — `Ctrl + Alt + Middle click` does not fire a trigger set to `Alt + Middle click`, so Chrome handles it instead.
 3. **Look for a message in the corner.** A warning or an error means Snaffle saw the click. If you have turned confirmations off, a successful save is silent, so check the popup's "Recently saved" list instead.
 4. **Confirm it is on.** Toolbar icon, master switch, and the per-trigger on/off state.
+
+**A video on Instagram saves a picture instead of the video.** The video had not started when you pressed the key, so there was nothing but its cover picture. Let it play for a moment, then grab.
 
 **A video on X saves the poster image instead of the video.** Snaffle never saw the playlist, because the video has not been played yet. Let it start, then grab. The playlist is recorded the moment the player requests it.
 

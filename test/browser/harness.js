@@ -36,6 +36,8 @@ async function launch(opts) {
     viewport: { width: o.width, height: o.height },
     deviceScaleFactor: o.dpr,
     acceptDownloads: true,
+    // Only ever met on the fixture servers' throwaway certificate.
+    ignoreHTTPSErrors: !!o.insecure,
     downloadsPath: dlDir,
     // Chromium's own screen recording of every page, for the demo.
     recordVideo: o.video ? { dir: o.video, size: { width: o.width, height: o.height } } : undefined,

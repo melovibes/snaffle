@@ -2,8 +2,9 @@
    coordinates the pieces that do the work: the downloads API, the offscreen
    document (large files and streamed video), and the content scripts. */
 
-importScripts('shared.js');
+importScripts('shared.js', 'tracks.js');
 const S = SnaffleShared;
+const T = SnaffleTracks;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -269,6 +270,7 @@ async function loadStreams() {
   if (!streams) {
     const s = await chrome.storage.session.get(STREAMS_KEY);
     streams = s[STREAMS_KEY] || { list: [] };
+    if (!streams.tracks) streams.tracks = [];
   }
   return streams;
 }
@@ -289,6 +291,36 @@ async function recordStream(d) {
   await chrome.storage.session.set({ [STREAMS_KEY]: s });
 }
 
+// Some sites have no playlist at all: each track of a video is one whole
+// file, which the player asks for a byte range at a time (see tracks.js).
+// Every range request names the track, so one record per track is kept and
+// its time refreshed. That happens many times a second while a video
+// plays, so it is written to storage at most every couple of seconds.
+const MAX_TRACKS = 400;
+let tracksSavedAt = 0;
+
+async function recordTrack(d) {
+  const s = await loadStreams();
+  const info = T.describe(d.url);
+  const now = Date.now();
+  let e = s.tracks.find((x) => x.key === info.key && x.tabId === d.tabId);
+  const fresh = !e;
+  if (fresh) {
+    const cutoff = now - STREAM_TTL;
+    s.tracks = s.tracks.filter((x) => x.ts > cutoff);
+    e = Object.assign(info, { tabId: d.tabId });
+    s.tracks.push(e);
+    if (s.tracks.length > MAX_TRACKS) s.tracks = s.tracks.slice(-MAX_TRACKS);
+  }
+  // The newest address wins: its signature is the one least likely to have expired.
+  e.url = info.url;
+  e.ts = now;
+  if (fresh || now - tracksSavedAt > 2000) {
+    tracksSavedAt = now;
+    await chrome.storage.session.set({ [STREAMS_KEY]: s });
+  }
+}
+
 chrome.webRequest.onBeforeRequest.addListener((d) => {
   // Playlists and whole files only - never the thousands of segment requests.
   // Judged on the path: a page address that merely mentions a playlist in its
@@ -300,8 +332,11 @@ chrome.webRequest.onBeforeRequest.addListener((d) => {
   // A request with no tab is the extension's own, from the worker page while
   // it rebuilds a stream. Only what pages ask for is evidence of a video.
   if (d.tabId < 0) return;
+  if (T.isTrack(d.url)) { recordTrack(d).catch(() => {}); return; }
+  // Anything else from the track hosts is not a video Snaffle can use.
+  try { if (T.HOSTS.test(new URL(d.url).hostname)) return; } catch (_) { return; }
   recordStream(d).catch(() => {});
-}, { urls: ['*://*/*.m3u8*', '*://video.twimg.com/*'] });
+}, { urls: ['*://*/*.m3u8*', '*://video.twimg.com/*', '*://*.cdninstagram.com/*', '*://*.fbcdn.net/*'] });
 
 // A player asks for a master playlist and then its variants, so several
 // recorded playlists can be one video. Two belong together when one sits in
@@ -330,13 +365,25 @@ async function findStream(mediaId, tabId) {
     const hits = (inTab.length ? inTab : s.list).filter((e) => e.id === mediaId);
     const group = streamGroups(hits.filter((e) => e.playlist)).pop();
     const best = group || hits[hits.length - 1];
-    return best ? { url: best.url } : { url: '' };
+    return best ? { url: best.url, exact: true, ts: best.ts } : { url: '' };
   }
   // No id to match on: the most recent stream this tab asked for. With more
   // than one stream on the page that is a guess, and the user is told so.
   const groups = streamGroups(inTab.filter((e) => e.playlist));
   const recent = groups[groups.length - 1];
-  return recent ? { url: recent.url, guessed: true, streams: groups.length } : { url: '' };
+  return recent ? { url: recent.url, guessed: true, streams: groups.length, ts: recent.ts } : { url: '' };
+}
+
+// The same question for a site that serves whole tracks: which of the
+// tracks this tab has asked for belong to the video being pointed at.
+async function findTracks(tabId, duration) {
+  const s = await loadStreams();
+  const cutoff = Date.now() - STREAM_TTL;
+  const inTab = s.tracks.filter((e) => e.tabId === tabId && e.ts > cutoff);
+  const found = T.pick(inTab, { duration });
+  if (!found) return null;
+  found.ts = inTab.reduce((n, e) => Math.max(n, e.ts), 0);
+  return found;
 }
 
 /* ------------------------------------------------- streamed video (jobs) */
@@ -371,6 +418,10 @@ async function grabStream(msg, sender) {
   if (!sender.tab) return { found: false };
   const tabId = sender.tab.id;
   const found = await findStream(msg.mediaId || '', tabId);
+  const tracks = await findTracks(tabId, Number(msg.duration) || 0);
+  // A playlist matched by id is certain. Otherwise whichever the tab asked
+  // for more recently is what is playing in it now.
+  if (tracks && !found.exact && (!found.url || tracks.ts >= (found.ts || 0))) return grabTracks(tracks, msg, sender);
   if (!found.url) return { found: false };
 
   const guess = found.guessed && found.streams > 1
@@ -392,6 +443,23 @@ async function grabStream(msg, sender) {
   const ack = await toOffscreen({ type: 'os:stream', job });
   if (!ack || !ack.ok) { clearReferer(ruleId); return { found: true, started: false, error: 'the worker page did not start' }; }
   // Every frame, so Escape cancels from wherever keyboard focus happens to be.
+  chrome.tabs.sendMessage(tabId, { type: 'streamStarted' }, () => void chrome.runtime.lastError);
+  return { found: true, started: true, id };
+}
+
+// A video made of separate picture and sound files: the worker page fetches
+// each whole and merges them into one MP4.
+async function grabTracks(tracks, msg, sender) {
+  const tabId = sender.tab.id;
+  const guess = !tracks.guessed ? ''
+    : tracks.posts > 1
+      ? ' - best guess: this page loaded ' + tracks.posts + ' videos and none could be matched to this one'
+      : ' - best guess: the site did not say which of its files belong to this video';
+  const id = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const ruleId = await setReferer(tracks.video, msg.pageUrl || sender.tab.url || tracks.video);
+  const job = { id, kind: 'tracks', video: tracks.video, audio: tracks.audio, tabId, meta: { tokens: msg.tokens, guess, ruleId } };
+  const ack = await toOffscreen({ type: 'os:stream', job });
+  if (!ack || !ack.ok) { clearReferer(ruleId); return { found: true, started: false, error: 'the worker page did not start' }; }
   chrome.tabs.sendMessage(tabId, { type: 'streamStarted' }, () => void chrome.runtime.lastError);
   return { found: true, started: true, id };
 }

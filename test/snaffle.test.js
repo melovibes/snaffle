@@ -10,6 +10,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const S = require('../shared.js');
 const H = require('../hls.js');
+const T = require('../tracks.js');
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
 let fails = 0;
@@ -30,6 +31,101 @@ function lift(file, startMarker, endMarker, names, scope) {
   const keys = Object.keys(scope || {});
   const fn = new Function(...keys, body + '\nreturn {' + names.join(',') + '};');
   return fn(...keys.map((k) => scope[k]));
+}
+
+/* ------------------------------------------- video in separate whole files */
+
+{
+  const efg = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const CDN = 'https://scontent-sjc3-1.cdninstagram.com/o1/v/t2/f2/';
+  const sig = '&_nc_ht=scontent-sjc3-1.cdninstagram.com&oh=00_Af-x%2By&oe=6A1B2C3D';
+  const track = (file, o, range) => CDN + file + '.mp4?_nc_cat=1&efg=' + efg(o) + sig + (range || '');
+  const hi = { vencode_tag: 'ig-xpvds.clips.dash_r2evevp9-r1gen2vp9_q90', bitrate: 2418700, duration_s: 38, xpv_asset_id: 111 };
+  const lo = { vencode_tag: 'ig-xpvds.clips.dash_r2evevp9-r1gen2vp9_q20', bitrate: 210367, duration_s: 38, xpv_asset_id: 111 };
+  const au = { vencode_tag: 'ig-xpvds.clips.dash_ln_heaac_vbr3_audio', bitrate: 64211, duration_s: 38, xpv_asset_id: 111 };
+
+  eq('a ranged MP4 request to the video CDN is a track', T.isTrack(track('m367/aaa', hi, '&bytestart=0&byteend=833')), true);
+  eq('...and so is one on the other CDN host', T.isTrack('https://instagram.fsjc1-1.fna.fbcdn.net/o1/v/x.mp4?bytestart=5&byteend=9'), true);
+  eq('the same file asked for whole is not', T.isTrack(track('m367/aaa', hi)), false);
+  eq('a picture from that host is not', T.isTrack(CDN + 'pic.jpg?bytestart=0&byteend=5'), false);
+  eq('a ranged MP4 from some other host is not', T.isTrack('https://notcdninstagram.com/a.mp4?bytestart=0&byteend=5'), false);
+
+  const base = track('m367/aaa', hi);
+  eq('the byte range is taken out and nothing else is touched, at the end',
+    T.whole(base + '&bytestart=834&byteend=961'), base);
+  eq('...in the middle',
+    T.whole(CDN + 'a.mp4?x=1&bytestart=0&byteend=9&oh=00_Af-x%2By'), CDN + 'a.mp4?x=1&oh=00_Af-x%2By');
+  eq('...at the start',
+    T.whole(CDN + 'a.mp4?bytestart=0&byteend=9&oh=00_Af-x%2By'), CDN + 'a.mp4?oh=00_Af-x%2By');
+  eq('...and when it is all there is', T.whole(CDN + 'a.mp4?bytestart=0&byteend=9'), CDN + 'a.mp4');
+  eq('a range is asked for the way the player asks', T.ranged(base + '&bytestart=1&byteend=2', 100, 199), base + '&bytestart=100&byteend=199');
+
+  const d = T.describe(track('m78/snd', au, '&bytestart=0&byteend=823'));
+  eq('an address says which post, what kind, how good and how long',
+    [d.asset, d.audio, d.bitrate, d.duration, d.known, d.key], ['111', true, 64211, 38, true, CDN + 'm78/snd.mp4']);
+  eq('...and one that says nothing is described as unknown, not as video',
+    [T.describe(CDN + 'x.mp4?bytestart=0&byteend=1').known, T.describe(CDN + 'x.mp4?efg=%%%').known], [false, false]);
+
+  const rec = (file, o, ts) => Object.assign(T.describe(track(file, o, '&bytestart=0&byteend=9')), { ts });
+  const post1 = [rec('m367/lo', lo, 10), rec('m367/hi', hi, 11), rec('m78/snd', au, 12)];
+  const one = T.pick(post1, { duration: 38.33 });
+  eq('one post: the best picture, its sound, and no guessing',
+    [one.video, one.audio, one.guessed], [track('m367/hi', hi), track('m78/snd', au), false]);
+
+  const other = (o, id, secs) => Object.assign({}, o, { xpv_asset_id: id, duration_s: secs });
+  const post2 = [rec('m367/hi2', other(hi, 222, 9), 50), rec('m78/snd2', other(au, 222, 9), 51)];
+  const byLength = T.pick(post1.concat(post2), { duration: 38.33 });
+  eq('two posts: the one whose length matches wins, even if the other was asked for later',
+    [byLength.video, byLength.guessed], [track('m367/hi', hi), false]);
+
+  const twin = [rec('m367/hi3', other(hi, 333, 38), 60), rec('m78/snd3', other(au, 333, 38), 61)];
+  const tied = T.pick(post1.concat(twin), { duration: 38.33 });
+  eq('two posts of the same length: the most recent, and it is called a guess',
+    [tied.video, tied.guessed, tied.posts], [track('m367/hi3', other(hi, 333, 38)), true, 2]);
+  const blind = T.pick(post1.concat(post2), {});
+  eq('no length to go on: the most recent, and it is called a guess',
+    [blind.video, blind.guessed], [track('m367/hi2', other(hi, 222, 9)), true]);
+
+  eq('sound alone is not a video', T.pick([rec('m78/snd', au, 1)], {}), null);
+  eq('nothing recorded is nothing to save', T.pick([], { duration: 5 }), null);
+  const bare = (file, ts) => Object.assign(T.describe(CDN + file + '.mp4?oh=1&bytestart=0&byteend=9'), { ts });
+  const untyped = T.pick([bare('a', 1), bare('b', 2), bare('c', 3)], {});
+  eq('files that do not say what they are: the two most recent, as a guess',
+    [untyped.video, untyped.audio, untyped.guessed, untyped.typed], [CDN + 'c.mp4?oh=1', CDN + 'b.mp4?oh=1', true, false]);
+}
+
+/* ------------------------------------------------- naming Instagram files */
+
+{
+  const link = (href) => ({ getAttribute: (k) => (k === 'href' ? href : null) });
+  const page = (address, tags, links) => ({
+    location: new URL(address),
+    document: {
+      querySelector: (sel) => (tags || {})[sel] || null,
+      querySelectorAll: () => links || []
+    }
+  });
+  const info = (p, el) => lift('content.js', '  const IG_POST = ', '  const hostToken = ', ['instagramInfo'], p).instagramInfo(el || {});
+
+  eq('a reel page names the account and the post',
+    info(page('https://www.instagram.com/instagram/reel/Df2aGgPtPZQ/')).name, 'instagram-Df2aGgPtPZQ');
+  eq('a post page takes the account from the canonical address, and the picture number from its own',
+    info(page('https://www.instagram.com/p/ABC_12-3/?img_index=2', {
+      'link[rel="canonical"]': { getAttribute: (k) => (k === 'href' ? 'https://www.instagram.com/someone/p/ABC_12-3/' : null) }
+    })).name, 'someone-ABC_12-3-2');
+  eq('a canonical address left over from another post is not believed',
+    info(page('https://www.instagram.com/p/NEW/', {
+      'link[rel="canonical"]': { getAttribute: (k) => (k === 'href' ? 'https://www.instagram.com/someone/p/OLD/' : null) }
+    }, [link('/explore/'), link('/alice.b/')])).name, 'alice.b-NEW');
+
+  // A feed: the picture sits inside a post that links to itself and its author.
+  const post = { querySelectorAll: () => [link('/bob_1/'), link('/p/FEED9/')], parentElement: null };
+  const inner = { querySelectorAll: () => [], parentElement: post };
+  eq('in a feed the nearest enclosing post is the one',
+    info(page('https://www.instagram.com/'), { parentElement: inner }).name, 'bob_1-FEED9');
+  eq('...and the address of the feed adds no picture number',
+    info(page('https://www.instagram.com/?img_index=4'), { parentElement: inner }).index, '');
+  eq('any other site is left alone', info(page('https://example.com/p/ABC/')), null);
 }
 
 /* ------------------------------------------------------------- url rewriting */
@@ -367,7 +463,7 @@ const Pdf = require('../pdf.js');
     manifest.content_scripts[0].js, ['shared.js', 'content.js']);
 
   // Every file the extension loads at run time must exist.
-  const wantedFiles = ['shared.js', 'hls.js', 'pdf.js', 'offscreen.html', 'offscreen.js', 'capture.js', 'gallery.js',
+  const wantedFiles = ['shared.js', 'hls.js', 'tracks.js', 'pdf.js', 'offscreen.html', 'offscreen.js', 'capture.js', 'gallery.js',
     'result.html', 'result.js', 'result.css',
     'vendor/mediabunny.min.mjs', 'vendor/mediabunny.LICENSE.txt', manifest.background.service_worker, manifest.options_page];
   eq('every file loaded at run time is present', wantedFiles.filter((x) => !fs.existsSync(path.join(ROOT, x))), []);
@@ -379,7 +475,9 @@ const Pdf = require('../pdf.js');
   eq('every icon the manifest names is shipped', Object.values(manifest.icons).filter((x) => !shipped.FILES.includes(x)), []);
   eq('the licence is MIT and travels with the release', [/^MIT License/.test(read('LICENSE')), shipped.DOCS.includes('LICENSE')], [true, true]);
   eq('the worker page loads its scripts in dependency order',
-    [...read('offscreen.html').matchAll(/src="([^"]+)"/g)].map((m) => m[1]), ['shared.js', 'hls.js', 'offscreen.js']);
+    [...read('offscreen.html').matchAll(/src="([^"]+)"/g)].map((m) => m[1]), ['shared.js', 'hls.js', 'tracks.js', 'offscreen.js']);
+  eq('the service worker loads the track module before it is used',
+    /importScripts\('shared\.js', 'tracks\.js'\)/.test(read('background.js')), true);
   for (const html of ['options.html', 'popup.html', 'result.html']) {
     eq(html + ' loads the shared module before its own script',
       [...read(html).matchAll(/<script src="([^"]+)"/g)].map((m) => m[1])[0], 'shared.js');

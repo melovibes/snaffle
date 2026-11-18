@@ -24,7 +24,7 @@ const rules = {
 };
 
 /* What each file can see besides the browser. */
-const shared = { SnaffleShared: 'readonly' };
+const shared = { SnaffleShared: 'readonly', SnaffleTracks: 'readonly' };
 
 module.exports = [
   { ignores: ['node_modules/', 'vendor/', 'dist/', 'docs/'] },
@@ -64,7 +64,7 @@ module.exports = [
 
   // Files loaded both by the browser and by the tests.
   {
-    files: ['shared.js', 'hls.js', 'pdf.js'],
+    files: ['shared.js', 'hls.js', 'pdf.js', 'tracks.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'script',

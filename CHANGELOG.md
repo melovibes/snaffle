@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- Instagram video. A post's picture and sound, which Instagram serves as two separate files, are fetched whole and merged into one MP4, at the best quality the post has.
+- Pointing at a video that has a cover picture lying over it now saves the video, not the cover.
+- A page that made it look as if the pointer had left no longer answers a save with "No image or video under the cursor".
+- Files saved from Instagram are named after the account and the post.
+
 ## 1.4.1
 
 - Screenshots of pages that are very wide as well as tall are split into shorter pieces, so they no longer need an enormous canvas.

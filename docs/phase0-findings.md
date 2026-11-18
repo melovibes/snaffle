@@ -124,6 +124,25 @@ Found by reading, and fixed:
 | A status line left over from an earlier message could stay on the results page | Cleared when the screenshot is shown |
 | Putting the page back after a capture could run twice if handing over to the results page failed | Runs once |
 
+## Instagram video (v1.5.0)
+
+Added after the plan was finished. How Instagram serves video was read off a real public reel before any code was written: nine files for one post (eight picture qualities and one of sound) on `cdninstagram.com`, fetched by the player in byte ranges through the address; all nine carrying the same asset id, their bitrate and the post's length; the address with the range removed returning the whole file with no cookies; and a cover picture lying exactly over the playing `<video>`, above it in paint order.
+
+That last one explains what was reported: pointing at a playing video found the cover picture, not the video. Two further ways to reach "No image or video under the cursor" were closed at the same time, because the exact report could not be reproduced: a page-made `mouseout` that reads as the pointer leaving, and a video fed without any address.
+
+| Check | What it proves |
+| --- | --- |
+| I01 | Pointing at a playing video under its cover saves one MP4 with picture and sound, named after the post |
+| I02 | Each file is fetched whole, once, with its signed address byte for byte as the page wrote it; lower qualities are not fetched |
+| I03 | A CDN that refuses whole files is read a range at a time, in order, to the end |
+| I04 | With a later post loaded, the video is matched by its length and nothing is called a guess |
+| I05 | With two posts of the same length, the most recent is saved and called a best guess |
+| I06 | A video not yet started saves its cover picture |
+| I07 | Pictures are named account-shortcode-number |
+| I08 | A page-made "pointer left" does not stop a save |
+
+The checks run against a copy of the site's behaviour served locally under Instagram's own host names. Beyond them, the merge was run once on that real reel's own files (1080x1920 VP9 with HE-AAC sound, 38 seconds): both fetched whole without cookies, merged, and decoded without error. Not tried: stories, live video, carousels of several videos, and anything behind a sign-in.
+
 Found by the browser checks, and fixed: the tab-switch check (C05) began failing about one run in two. The picture was always right; what went missing was the "Paused" message. When a page removes one of Snaffle's messages from the document, the message is made again the next time it is needed, but the old one's timer was left running and later dismissed its replacement. The tests remove messages between checks, which is how it showed. The timer is now cleared, and C05 fails if the message goes missing at any point while the tab is behind.
 
 G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an extension's filename hook when downloads are driven through the automation protocol. The renaming logic is unit-tested; the end-to-end behaviour needs a manual check.

@@ -1,0 +1,78 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Instagram fixture</title>
+<style>
+  body { margin: 0; }
+  .player { position: relative; width: 320px; height: 568px; margin: 20px; background: #000; }
+  .player video, .player img, .player .veil, .player .group { position: absolute; left: 0; top: 0; width: 320px; height: 568px; }
+  #photo { display: block; width: 200px; height: 150px; margin: 20px; }
+</style></head>
+<body>
+<!-- Built the way the real player is: the video at the bottom, then a group,
+     then the cover picture exactly over it, then a transparent layer on top.
+     Query: ?strict the CDN refuses whole files; ?second=N a second post of N
+     seconds is asked for afterwards; ?idle nothing has been played yet;
+     ?canon=name the page declares its canonical address under that account. -->
+<div class="player" id="player">
+  <video id="v" playsinline preload="none"></video>
+  <div class="group" role="group"></div>
+  <img id="cover" src="/img/320x568/224466/cover.png" alt="">
+  <div class="veil" role="presentation"></div>
+</div>
+<img id="photo" src="/img/200x150/aa5500/503918273_18044_n.png" alt="">
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search);
+  if (q.has('canon')) {
+    const link = document.createElement('link');
+    link.rel = 'canonical';
+    link.href = location.origin + '/' + q.get('canon') + '/' + location.pathname.split('/').filter(Boolean).slice(-2).join('/') + '/';
+    document.head.appendChild(link);
+  }
+  const state = { mse: false, duration: 0 };
+  window.__ig = state;
+  if (q.has('idle')) { document.title = 'Instagram fixture ready'; return; }
+
+  const CDN = '{{CDN}}/o1/v/t2/f2/' + (q.has('strict') ? 'strict' : 'm367') + '/';
+  const efg = (o) => btoa(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  // The signature holds a character that must reach the server exactly as written.
+  const address = (file, tag, bitrate, asset, secs) => CDN + file + '.mp4?_nc_cat=1&efg=' +
+    efg({ vencode_tag: tag, bitrate, duration_s: secs, xpv_asset_id: asset }) + '&_nc_ht=x&oh=00_Af-x%2By&oe=6A1B2C3D';
+  const ask = async (u, a, b) => new Uint8Array(await (await fetch(u + '&bytestart=' + a + '&byteend=' + b)).arrayBuffer());
+  const V = 'ig.dash_r2evevp9-r1gen2vp9_q', A = 'ig.dash_ln_heaac_vbr3_audio';
+
+  const lo = address('v-lo', V + '20', 60000, 111, 4);
+  const hi = address('v-hi', V + '90', 400000, 111, 4);
+  const au = address('a', A, 64000, 111, 4);
+
+  // The player looks at every quality, then plays the best. It never asks
+  // for all of the sound, so a whole file can only have come from Snaffle.
+  await ask(lo, 0, 999);
+  const head = await ask(hi, 0, 999);
+  await ask(au, 0, 999);
+  const rest = await ask(hi, 1000, 999999);
+
+  const v = document.getElementById('v');
+  const ms = new MediaSource();
+  v.src = URL.createObjectURL(ms);
+  try {
+    await new Promise((res, rej) => { ms.addEventListener('sourceopen', res, { once: true }); setTimeout(rej, 3000); });
+    const sb = ms.addSourceBuffer('video/mp4; codecs="vp09.00.10.08"');
+    const bytes = new Uint8Array(head.length + rest.length);
+    bytes.set(head, 0); bytes.set(rest, head.length);
+    await new Promise((res, rej) => { sb.addEventListener('updateend', res, { once: true }); sb.addEventListener('error', rej, { once: true }); sb.appendBuffer(bytes); });
+    ms.endOfStream();
+    await new Promise((res) => { if (v.readyState > 0) res(); else { v.addEventListener('loadedmetadata', res, { once: true }); setTimeout(res, 2000); } });
+    state.mse = true;
+    state.duration = v.duration;
+  } catch (e) { state.error = String(e); }
+
+  if (q.has('second')) {
+    const secs = Number(q.get('second'));
+    // Another post further down the feed, asked for after this one.
+    await ask(address('v-other', V + '90', 400000, 222, secs), 0, 999);
+    await ask(address('a-other', A, 64000, 222, secs), 0, 999);
+  }
+  document.title = 'Instagram fixture ready';
+})();
+</script>
+</body></html>

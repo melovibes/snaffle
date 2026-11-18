@@ -14,7 +14,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { PNG } = require('pngjs');
 const { launch, sleep } = require('./harness');
-const { start } = require('./server');
+const { start, throwawayCert } = require('./server');
 
 // Defect id -> the phase that fixes it. See docs/phase0-findings.md.
 const KNOWN_FAILING = {};
@@ -48,9 +48,15 @@ const base = (u) => {
 };
 
 (async () => {
-  const A = await start(4701, 4702);
-  const B = await start(4702, 4701);
-  const h = await launch();
+  const cert = await throwawayCert();
+  const A = await start(4701, 4702, { key: cert.key, cert: cert.cert, port: 4711, peerPort: 4712 });
+  const B = await start(4702, 4701, { key: cert.key, cert: cert.cert, port: 4712, peerPort: 4711 });
+  // Names for the fixture servers, so pages can be served from Instagram-shaped
+  // addresses. Nothing here reaches the real site.
+  const h = await launch({
+    insecure: true,
+    args: ['--host-resolver-rules=MAP www.instagram.com 127.0.0.1, MAP *.cdninstagram.com 127.0.0.1', '--ignore-certificate-errors']
+  });
 
   const clearToast = (target) => target.evaluate(() => {
     const host = document.getElementById('__snaffle_ui');
@@ -229,8 +235,11 @@ const base = (u) => {
 
     await check('grab', 'G27', null, 'With the pointer outside the page, the key says nothing is there rather than saving a stale target', async () => {
       await h.hover(page, '#plain img');
-      // Leave the document the way a pointer leaves a window.
-      await page.evaluate(() => document.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null })));
+      // Really move off the page. That fires the mouseout a leaving pointer fires
+      // and clears the browser's own hover state, which a made-up event does not
+      // (I08 covers the made-up kind, which must not stop a save).
+      await page.mouse.move(-10, -10);
+      await sleep(200);
       const marks = await mark(h);
       await clearToast(page);
       await page.keyboard.press('Alt+KeyS');
@@ -500,6 +509,119 @@ const base = (u) => {
     });
     A.slow(0);
     await slow.close();
+  }
+
+  /* =========================================================== instagram */
+
+  // Instagram serves a video as separate picture and sound files, fetched a
+  // byte range at a time. The fixture is a page at an Instagram-shaped
+  // address whose player and CDN behave the way the real ones were seen to.
+  if (!only || only === 'ig') {
+    const IG = 'https://www.instagram.com:4711';
+    const probeIg = (bytes) => {
+      const out = path.join(h.work, 'ig-' + Date.now() + '.bin');
+      fs.writeFileSync(out, bytes);
+      try {
+        const j = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_entries',
+          'format=duration,format_name:stream=codec_type,codec_name,width,height,nb_frames', '-of', 'json', out]).toString());
+        const v = (j.streams || []).find((s) => s.codec_type === 'video');
+        const a = (j.streams || []).find((s) => s.codec_type === 'audio');
+        return {
+          height: v ? v.height : 0, frames: v ? parseInt(v.nb_frames || '0', 10) : 0, audio: !!a,
+          seconds: parseFloat((j.format || {}).duration || '0'), mp4: /mp4/.test((j.format || {}).format_name || ''),
+          text: (v ? v.codec_name + ' ' + v.width + 'x' + v.height + ', ' + v.nb_frames + ' frames' : 'no video') + ', ' +
+                (a ? a.codec_name + ' audio' : 'NO AUDIO') + ', ' + parseFloat((j.format || {}).duration || '0').toFixed(2) + 's'
+        };
+      } catch (e) { return { height: 0, frames: 0, audio: false, text: 'ffprobe could not read it' }; }
+    };
+    const wholeIg = (p, height) => p.mp4 && p.height === height && p.frames === 120 && p.audio && Math.abs(p.seconds - 4) < 0.3;
+    const openIg = async (address) => {
+      const page = await h.newPage(IG + address);
+      await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 15000 });
+      await sleep(500);
+      return page;
+    };
+    // What the CDN was asked for, by the page's player and by the extension alike.
+    const cdn = (list) => list.filter((r) => /^\/o1\/v\//.test(r.path))
+      .map((r) => ({ file: r.path.split('/').pop(), start: (/bytestart=(\d+)/.exec(r.search) || [])[1], end: (/byteend=(\d+)/.exec(r.search) || [])[1] }));
+
+    let first = null, firstCdn = [];
+    const reel = await openIg('/instagram/reel/Df2aGgPtPZQ/');
+    await check('ig', 'I01', null, 'Pointing at a playing Instagram video, under its cover picture, saves the video with its sound as one MP4', async () => {
+      const state = await reel.evaluate(() => window.__ig);
+      const markB = B.mark();
+      first = await grab(reel, '#player', { settle: 25000 });
+      firstCdn = cdn(B.since(markB));
+      if (!first.bytes) return { ok: false, observed: describe(first) + '; player ' + JSON.stringify(state) };
+      const p = probeIg(first.bytes);
+      const named = /^Saved Snaffle\/instagram\.com\/instagram-Df2aGgPtPZQ-568p\.mp4 \(/.test(first.toast || '');
+      return { ok: wholeIg(p, 568) && named && !/best guess|no sound/.test(first.toast) && !first.anchors.length,
+        observed: p.text + '; toast "' + first.toast + '"; the page had played ' + (state.mse ? state.duration + 's' : 'nothing (' + state.error + ')') };
+    });
+
+    await check('ig', 'I02', null, 'Each track is fetched whole, once, with its signed address untouched; the lower quality is left alone', async () => {
+      const wholes = firstCdn.filter((r) => r.start == null).map((r) => r.file).sort();
+      const ranged = firstCdn.filter((r) => r.start != null).length;
+      // The fixture CDN answers 403 to a signature that is not byte-for-byte right,
+      // so two whole files arriving is the proof the address was not rewritten.
+      return { ok: wholes.join() === 'a.mp4,v-hi.mp4' && ranged === 0,
+        observed: 'whole files asked for: ' + (wholes.join(', ') || 'none') + '; ranged requests by the extension: ' + ranged };
+    });
+    await reel.close();
+
+    await check('ig', 'I03', null, 'When the CDN refuses the whole file, the ranges are fetched in order and joined', async () => {
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?strict=1');
+      const markB = B.mark();
+      const r = await grab(page, '#player', { settle: 25000 });
+      const asked = cdn(B.since(markB)).filter((x) => x.file === 'v-hi.mp4');
+      await page.close();
+      if (!r.bytes) return { ok: false, observed: describe(r) };
+      const p = probeIg(r.bytes);
+      const starts = asked.filter((x) => x.start != null).map((x) => Number(x.start));
+      const inOrder = starts.length >= 4 && starts.every((s, i) => i === 0 ? s === 0 : s === starts[i - 1] + 50000 || s > starts[i - 1]);
+      return { ok: wholeIg(p, 568) && inOrder && asked.some((x) => x.start == null),
+        observed: p.text + '; picture file asked for whole ' + asked.filter((x) => x.start == null).length + ' time(s) and refused, then from bytes ' + starts.join(', ') };
+    });
+
+    await check('ig', 'I04', null, 'With another post loaded afterwards, the video is matched by its length and nothing is called a guess', async () => {
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?second=9');
+      const r = await grab(page, '#player', { settle: 25000 });
+      await page.close();
+      if (!r.bytes) return { ok: false, observed: describe(r) };
+      const p = probeIg(r.bytes);
+      return { ok: wholeIg(p, 568) && !/best guess/.test(r.toast), observed: 'the 4s post is 568 high, the later 9s post 320: saved ' + p.text + '; toast "' + r.toast + '"' };
+    });
+
+    await check('ig', 'I05', null, 'With two posts of the same length, the most recent is saved and the user is told it is a guess', async () => {
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?second=4');
+      const r = await grab(page, '#player', { settle: 25000 });
+      await page.close();
+      if (!r.bytes) return { ok: false, observed: describe(r) };
+      const p = probeIg(r.bytes);
+      return { ok: wholeIg(p, 320) && /best guess: this page loaded 2 videos/.test(r.toast), observed: 'saved ' + p.text + '; toast "' + r.toast + '"' };
+    });
+
+    await check('ig', 'I06', null, 'A video that has not been started yet saves its cover picture, named after the post', async () => {
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?idle=1');
+      const r = await grab(page, '#player');
+      await page.close();
+      return { ok: gotFile(r, 'cover.png') && /^Saved Snaffle\/instagram\.com\/instagram-Df2aGgPtPZQ\.png$/.test(r.toast || ''), observed: describe(r) };
+    });
+
+    await check('ig', 'I08', null, 'A page that makes the pointer look as if it had left does not stop a save', async () => {
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?idle=1');
+      // What a page rebuilding itself under a still pointer produces: a mouseout with nowhere to go.
+      const r = await grab(page, '#photo', { beforeTrigger: () => page.evaluate(() => document.getElementById('photo').dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }))) });
+      await page.close();
+      return { ok: gotFile(r, '503918273_18044_n.png') && /^Saved /.test(r.toast || ''), observed: describe(r) };
+    });
+
+    await check('ig', 'I07', null, 'Pictures are named account-shortcode-number, so a file can be traced to its post', async () => {
+      const page = await openIg('/p/ABC_12-3/?img_index=2&canon=some.one&idle=1');
+      const r = await grab(page, '#photo');
+      await page.close();
+      return { ok: gotFile(r, '503918273_18044_n.png') && /^Saved Snaffle\/instagram\.com\/some\.one-ABC_12-3-2\.png$/.test(r.toast || ''), observed: describe(r) };
+    });
   }
 
   /* ========================================================== screenshot */

@@ -1,6 +1,6 @@
 # Chrome Web Store Listing: Snaffle
 
-> Last Updated: 2026-11-16
+> Last Updated: 2026-11-17
 >
 > Everything the Developer Dashboard asks for, in one place, ready to copy across.
 > This file is not shipped in the extension. Fields marked **TO FILL** need you.
@@ -104,7 +104,7 @@ One box per permission in the dashboard. Each of these is written to be pasted i
 | `downloads` | permissions | Saves the image, video or screenshot the user asked for into their Downloads folder, under the folder and file name they chose in the options. Also used to check that a download really finished before telling the user it was saved, and for the "Show in folder" button. |
 | `storage` | permissions | Remembers the user's settings: their trigger keys and mouse button, folder and file-name patterns, and options. Also holds short-lived working notes in session memory (downloads still in progress, and video playlists seen in this session) that are cleared when the browser closes. |
 | `contextMenus` | permissions | Adds one item, "Save with Snaffle", to the right-click menu on images and video, as an alternative to the keyboard and mouse triggers. The user can turn it off. |
-| `webRequest` | permissions | Observes, without blocking or changing anything, requests for video playlists. A streamed video has no single file address, so the playlist the page requested is the only way to save that video when the user asks. The addresses are kept in memory for this session only, for at most two hours, and are never sent anywhere. |
+| `webRequest` | permissions | Observes, without blocking or changing anything, requests for video playlists and, on sites that serve a video as separate picture and sound files, requests for those files. A streamed video has no single file address, so what the page requested is the only way to save that video when the user asks. The addresses are kept in memory for this session only, for at most two hours, and are never sent anywhere. |
 | `scripting` | permissions | Loads the extension's own bundled scripts into a tab: so that it works in tabs that were already open when it was installed or updated, and so that the screenshot and media-list code is loaded only when the user asks for those features rather than into every page. No remote code is loaded. |
 | `offscreen` | permissions | Opens a hidden page that joins the pieces of a streamed video into one file and holds large files while they are being saved. The background service worker cannot do this itself, because it cannot hold a file in memory for a download and may be stopped during a long one. |
 | `declarativeNetRequestWithHostAccess` | permissions | Some video sites only send video to requests that carry the address of the page the video is on. While a video the user asked for is being saved, a temporary session rule adds that address to the extension's own requests to that one site, and is removed when the save ends. It applies only to requests made by the extension itself. It blocks nothing and changes no request made by any web page. |
@@ -180,6 +180,7 @@ It has `manifest.json` at the top level and holds only what Chrome runs plus the
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.5.0 | 2026-11-17 | Adds saving Instagram video (picture and sound merged into one file) and names files from Instagram after their post. | Draft |
 | 1.4.1 | 2026-11-16 | First version prepared for the store. Hover-save by key or click, streamed video saved as one file, full-page screenshots with a results page, media list for bulk download. | Draft |
 
 ## Review Notes
@@ -197,7 +198,8 @@ It has `manifest.json` at the top level and holds only what Chrome runs plus the
 **Saving video.** This is the main risk. The store has long refused extensions that download video from YouTube, and looks hard at anything that saves streamed video. Where Snaffle stands, as facts:
 
 - It cannot save DRM-protected video, and says so.
-- It saves a streamed video only when the page has requested an HLS playlist (`.m3u8`), or a whole `.mp4` from one video host it knows about. It has no YouTube-specific code.
+- It saves a streamed video when the page has requested an HLS playlist (`.m3u8`), a whole `.mp4` from one video host it knows about, or, since 1.5.0, the separate picture and sound files that Instagram's CDN serves. It has no YouTube-specific code.
+- Since 1.5.0 it does have Instagram-specific code. Instagram's terms do not allow downloading other people's content, and a reviewer may raise it for the same reason they raise YouTube. Whether to ship that feature in the store build is a decision for you; it can be left out of a store build without touching the rest.
 - It has not been tested on YouTube. I have not verified what it does there.
 
 The safe course, if you want the listing to survive review, is to make the stream rebuild refuse on YouTube outright and say so in the description. That is a small code change and a decision for you; it has not been made.
