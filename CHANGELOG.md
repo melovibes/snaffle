@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+- Rebuilt videos, screenshots and pictures held in the page were saved loose in Downloads under a random name, while the message gave the name and folder they should have had. They now go where the message says. Direct picture downloads were not affected.
+- When a file of the same name is already there and Chrome adds a number, the message gives the name the file really got.
+
 ## 1.5.0
 
 - Instagram video. A post's picture and sound, which Instagram serves as two separate files, are fetched whole and merged into one MP4, at the best quality the post has.

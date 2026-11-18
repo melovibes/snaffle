@@ -180,6 +180,7 @@ It has `manifest.json` at the top level and holds only what Chrome runs plus the
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.5.1 | 2026-11-17 | Rebuilt videos, screenshots and in-page pictures are saved under their names in the chosen folder (they had been landing loose in Downloads under random names). | Draft |
 | 1.5.0 | 2026-11-17 | Adds saving Instagram video (picture and sound merged into one file) and names files from Instagram after their post. | Draft |
 | 1.4.1 | 2026-11-16 | First version prepared for the store. Hover-save by key or click, streamed video saved as one file, full-page screenshots with a results page, media list for bulk download. | Draft |
 

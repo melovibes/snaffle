@@ -46,6 +46,8 @@ jobs:
       # The zip people download: build it from this commit and make sure it loads.
       - run: npm run package -- --check
       - run: npm run test:browser
+      # What a saved file is really called and where it really lands.
+      - run: npm run test:native
       - name: Keep the results
         if: always()
         uses: actions/upload-artifact@v4

@@ -143,6 +143,29 @@ That last one explains what was reported: pointing at a playing video found the 
 
 The checks run against a copy of the site's behaviour served locally under Instagram's own host names. Beyond them, the merge was run once on that real reel's own files (1080x1920 VP9 with HE-AAC sound, 38 seconds): both fetched whole without cookies, merged, and decoded without error. Not tried: stories, live video, carousels of several videos, and anything behind a sign-in.
 
+## Files saved under random names (v1.5.1)
+
+Reported from use: Instagram videos were saved correctly but landed loose in Downloads as `84fa7945-....mp4`, while the message named the folder and file they should have had.
+
+The cause was older and wider than Instagram. Since the file-extension correction was added, the extension has listened for Chrome's `onDeterminingFilename`. Once an extension does that, the name it passes to `downloads.download()` no longer counts on its own: Chrome uses what the listener suggests, and if it suggests nothing the file is named from its address. Direct downloads were registered with the listener and were fine. Everything saved from a copy held in memory was not, and its address is a random id: rebuilt streams (X as well as Instagram), screenshots saved either way, and pictures that exist only in the page.
+
+It went unseen because the browser checks cannot see file names: the automation library takes over downloads and skips that hook, which is the limit recorded against G12 in Phase 0. The message, the bytes and the download record were all right; only the name on disk was wrong.
+
+The fix registers every download with the listener before it starts, including those the results page starts itself. The larger change is a second harness, `test/browser/native.js`, which starts Chromium without the automation library's download handling and checks what lands on disk:
+
+| Check | What it proves |
+| --- | --- |
+| N01 | A picture is saved under its own name in the Snaffle folder |
+| N02 | A picture with no extension is named for what the server sent (closes G12) |
+| N03 | A picture held only in the page is saved by name into the folder |
+| N04 | A rebuilt stream is saved by name into the folder |
+| N05 | An Instagram video is saved as account-shortcode-height.mp4 in the folder |
+| N06 | A screenshot saved straight away is named after the page |
+| N07 | A screenshot saved from its results page goes in the folder; a second file of the same name is reported under the numbered name Chrome gave it |
+| N08 | Nothing is left loose in Downloads |
+
+Run against 1.5.0 it failed N03, N04, N05, N07 and N08, reproducing the report. N07 also found that a message kept the asked-for name when Chrome had added " (1)" to it; messages now give the name the file really got.
+
 Found by the browser checks, and fixed: the tab-switch check (C05) began failing about one run in two. The picture was always right; what went missing was the "Paused" message. When a page removes one of Snaffle's messages from the document, the message is made again the next time it is needed, but the old one's timer was left running and later dismissed its replacement. The tests remove messages between checks, which is how it showed. The timer is now cleared, and C05 fails if the message goes missing at any point while the tab is behind.
 
 G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an extension's filename hook when downloads are driven through the automation protocol. The renaming logic is unit-tested; the end-to-end behaviour needs a manual check.

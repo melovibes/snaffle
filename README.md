@@ -252,8 +252,9 @@ pwsh -File tools/make-icons.ps1
 ```
 npm install
 npm run lint          # ESLint over every file
-npm test              # 152 offline checks, a second or two
+npm test              # 158 offline checks, a second or two
 npm run test:browser  # 91 checks in headless Chromium, about ten minutes; needs ffprobe on the PATH
+npm run test:native   # 8 checks of the names and folders of saved files, about a minute
 npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
 npm run shots         # retake the screenshots in docs/img
 npm run demo          # re-record docs/img/demo.gif; needs ffmpeg on the PATH
@@ -267,9 +268,11 @@ All three of lint, the offline checks and the browser checks run on GitHub for e
 
 **Browser checks** load the shipped files into headless Chromium and drive them with real pointer and keyboard input against fixture pages served from two local origins. Each result is checked three ways: the toast, Chrome's own download record, and the fixture server's request log. Saved bytes are read back: a rebuilt video is run through `ffprobe` for its tracks, frame count and length, and a screenshot is decoded and sampled. The streams are real ones made with ffmpeg, including split-audio, multi-rendition, MPEG-TS and Referer-guarded variants. The options page, the popup and the media list are driven the way a user would, keyboard included.
 
+**Native-download checks** exist because the browser checks cannot see one thing: the automation library takes over downloads, saving files under ids and skipping the hook Chrome uses to name them. So `test/browser/native.js` starts the same Chromium by hand, drives it over the DevTools protocol with nothing touching downloads, and looks at what actually lands in a temporary download folder: the file's name, its folder, and whether the message told the truth about both.
+
 A defect that is understood but not yet fixed goes in `KNOWN_FAILING` at the top of `test/browser/run.js` with a note. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale. It is empty at the moment.
 
-Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the popup as Chrome shows it from the toolbar (it is tested opened as a page and pointed at a tab), the "Show in folder" buttons actually opening a folder, the file-extension correction (Chrome skips that hook when downloads are driven by the automation protocol), and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
+Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the popup as Chrome shows it from the toolbar (it is tested opened as a page and pointed at a tab), the "Show in folder" buttons actually opening a folder, and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
 
 ## Troubleshooting
 

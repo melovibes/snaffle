@@ -258,6 +258,24 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     return had ? filename.slice(0, -had.length) + real : filename + '.' + real;
   }
 
+  // The path a file really landed at, in the form it was asked for. When a
+  // file of that name is already there, Chrome saves the new one beside it as
+  // "name (1).ext", and the message should say so. `absolute` is where Chrome
+  // says the file is. Anything other than that one pattern is left as asked:
+  // the folder part is ours, and only the numbered suffix is Chrome's.
+  function landedName(intended, absolute) {
+    const path = String(intended || '');
+    const want = path.split('/').pop();
+    const got = String(absolute || '').split(/[\\/]/).pop();
+    if (!want || !got || got === want) return path;
+    const dot = want.lastIndexOf('.');
+    const stem = dot > 0 ? want.slice(0, dot) : want;
+    const ext = dot > 0 ? want.slice(dot) : '';
+    const numbered = got.startsWith(stem + ' (') && got.endsWith(')' + ext) &&
+      /^\d+$/.test(got.slice(stem.length + 2, got.length - ext.length - 1));
+    return numbered ? path.slice(0, path.length - want.length) + got : path;
+  }
+
   const sizeText = (bytes) => (bytes >= 1048576
     ? (bytes / 1048576).toFixed(1) + ' MB'
     : Math.max(1, Math.round(bytes / 1024)) + ' KB');
@@ -267,7 +285,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     merge, overridesOf, effective, toStore,
     BUTTONS, keyLabel, mouseLabel, keyWarning, mouseWarning,
     sanitizeSegment, applyTemplate, buildPath,
-    MIME_EXT, cleanMime, notMedia, nameForMime, sizeText
+    MIME_EXT, cleanMime, notMedia, nameForMime, sizeText, landedName
   };
 })();
 

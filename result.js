@@ -140,9 +140,17 @@ async function nextIndex() {
   return n;
 }
 
-function download(blob, filename) {
-  return new Promise((resolve) => {
-    const url = URL.createObjectURL(blob);
+const tellWorker = (msg) => new Promise((res) => {
+  try { chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r); }); } catch (_) { res(null); }
+});
+
+async function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  // The service worker names every download the extension starts. It has to
+  // be told this one's name before the download begins, or the file is
+  // saved under the random id in its address.
+  await tellWorker({ type: 'expectName', url, filename });
+  const done = await new Promise((resolve) => {
     chrome.downloads.download({ url, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs }, (downloadId) => {
       if (chrome.runtime.lastError || downloadId == null) {
         URL.revokeObjectURL(url);
@@ -153,7 +161,7 @@ function download(blob, filename) {
       const tick = () => chrome.downloads.search({ id: downloadId }, (items) => {
         const item = items && items[0];
         if (!item) { resolve({ ok: false, error: 'the download disappeared' }); return; }
-        if (item.state === 'complete') { URL.revokeObjectURL(url); resolve({ ok: true, id: downloadId }); return; }
+        if (item.state === 'complete') { URL.revokeObjectURL(url); resolve({ ok: true, id: downloadId, landed: item.filename }); return; }
         if (item.state === 'interrupted') {
           URL.revokeObjectURL(url);
           resolve({ ok: false, cancelled: item.error === 'USER_CANCELED', error: 'the browser would not save it' });
@@ -164,6 +172,8 @@ function download(blob, filename) {
       tick();
     });
   });
+  await tellWorker({ type: 'forgetName', url });
+  return done;
 }
 
 async function save(format) {
@@ -189,7 +199,7 @@ async function save(format) {
         return;
       }
       lastSaved = res.id;
-      if (!firstPath) firstPath = path;
+      if (!firstPath) firstPath = S.landedName(path, res.landed);
     }
     setStatus(files.length > 1 ? 'Saved ' + files.length + ' files, starting with ' + firstPath + '.' : 'Saved ' + firstPath + '.', '', lastSaved);
   } catch (e) {

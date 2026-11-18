@@ -159,7 +159,7 @@ const base = (u) => {
     // nameForMime is unit-tested instead, and this stays on the manual list.
     await check('grab', 'G12', null, 'Extension-less image served as WebP is named .webp', async () => ({
       untested: true, ok: false,
-      observed: 'not observable under automation (filename hook is bypassed); covered by a unit test, needs a manual check'
+      observed: 'not observable here (this library bypasses the filename hook); checked for real by N02 in test/browser/native.js'
     }));
 
     await check('grab', 'G13', 1, 'A URL that answers with a web page is not reported as a saved image', async () => {

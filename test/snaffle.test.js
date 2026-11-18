@@ -33,6 +33,21 @@ function lift(file, startMarker, endMarker, names, scope) {
   return fn(...keys.map((k) => scope[k]));
 }
 
+/* ------------------------------------------------ the name a file really got */
+
+eq('a file saved where it was asked keeps its path',
+  S.landedName('Snaffle/x.com/pic.png', 'C:\\Users\\me\\Downloads\\Snaffle\\x.com\\pic.png'), 'Snaffle/x.com/pic.png');
+eq('a name already taken reports the numbered name Chrome gave it',
+  S.landedName('Snaffle/x.com/pic.png', 'C:\\Users\\me\\Downloads\\Snaffle\\x.com\\pic (2).png'), 'Snaffle/x.com/pic (2).png');
+eq('...on a path with forward slashes too',
+  S.landedName('Snaffle/a/Tall fixture.png', '/home/me/Downloads/Snaffle/a/Tall fixture (1).png'), 'Snaffle/a/Tall fixture (1).png');
+eq('...and with no extension', S.landedName('Snaffle/a/file', '/d/Snaffle/a/file (3)'), 'Snaffle/a/file (3)');
+eq('a file that was already called "x (1)" is not mistaken for a renamed "x"',
+  S.landedName('Snaffle/a/x (1).png', '/d/Snaffle/a/x (1).png'), 'Snaffle/a/x (1).png');
+eq('any other name on disk is not believed (a test browser saves under ids)',
+  [S.landedName('Snaffle/a/pic.png', '/tmp/dl/3f2a9c1e-77aa'), S.landedName('Snaffle/a/pic.png', '/d/pic (x).png'), S.landedName('Snaffle/a/pic.png', '')],
+  ['Snaffle/a/pic.png', 'Snaffle/a/pic.png', 'Snaffle/a/pic.png']);
+
 /* ------------------------------------------- video in separate whole files */
 
 {

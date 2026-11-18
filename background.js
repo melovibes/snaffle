@@ -67,16 +67,29 @@ const WHY = {
   FILE_NAME_TOO_LONG: 'the file name is too long'
 };
 
-// The name a download was asked for, keyed by address, so the file can be
-// renamed once the server has said what it really is.
+// The name every download of ours was asked for, keyed by address.
+//
+// Because this extension listens for onDeterminingFilename, the name passed
+// to downloads.download() counts for nothing on its own: Chrome uses what
+// the listener suggests, and with no suggestion falls back to a name made
+// from the address. For a file held in memory that is a random id, saved
+// loose in Downloads. So every download is entered here before it starts,
+// and the listener suggests its name back.
 const wanted = new Map();
+
+// A name is expected for a download that is about to start. `exact` means
+// the name is already right (we made the file ourselves); otherwise the
+// extension is corrected once the server has said what the file really is.
+function expectName(url, filename, exact) {
+  wanted.set(url, { filename, exact: !!exact });
+}
 
 // Runs for every download in the browser once its headers are in. Ours are
 // the only ones touched; anything else is left to Chrome and other extensions.
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   const w = item.byExtensionId === chrome.runtime.id ? wanted.get(item.url) : null;
   if (!w) return;
-  w.finalName = S.nameForMime(w.filename, item.mime);
+  w.finalName = w.exact ? w.filename : S.nameForMime(w.filename, item.mime);
   suggest({ filename: w.finalName, conflictAction: 'uniquify' });
 });
 
@@ -118,12 +131,15 @@ async function recall(id) {
 }
 
 async function tryDownload(url, filename, cfg, sender) {
-  wanted.set(url, { filename });
+  expectName(url, filename, false);
   try {
     const res = await startDownload({ url, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
     if (!res.ok) return { ok: false, error: res.error, filename };
     const v = await verdict(res.id, !!cfg.saveAs);
-    const finalName = (wanted.get(url) || {}).finalName || filename;
+    // By now Chrome has settled on where the file goes, which is not always
+    // where it was asked to: a name already taken gets a number added.
+    const landed = await findDownload(res.id);
+    const finalName = S.landedName((wanted.get(url) || {}).finalName || filename, landed && landed.filename);
     if (!v.ok) {
       if (!v.cancelled) await discard(res.id);
       return { ok: false, error: v.error, cancelled: !!v.cancelled, filename: finalName };
@@ -210,6 +226,7 @@ async function closeOffscreenIfIdle() {
 
 // Download a blob the worker page is holding, then let it go.
 async function saveBlobUrl(url, filename, cfg) {
+  expectName(url, filename, true);
   try {
     const res = await startDownload({ url, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
     if (!res.ok) return { ok: false, error: res.error };
@@ -220,11 +237,12 @@ async function saveBlobUrl(url, filename, cfg) {
       if (item.state === 'interrupted') {
         return { ok: false, cancelled: item.error === 'USER_CANCELED', error: WHY[item.error] || 'the browser would not save it' };
       }
-      if (item.state === 'complete') return { ok: true, filename, id: res.id };
+      if (item.state === 'complete') return { ok: true, filename: S.landedName(filename, item.filename), id: res.id };
       await sleep(100);
     }
     return { ok: false, error: 'saving took too long' };
   } finally {
+    wanted.delete(url);
     await toOffscreen({ type: 'os:revoke', url });
     closeOffscreenIfIdle();
   }
@@ -501,7 +519,7 @@ async function finishStream(msg) {
     (msg.silent ? ' - no sound: the audio track could not be included' : '') +
     (msg.joined ? ' - saved as joined segments, so some players may show the wrong length' : '') +
     (meta.guess || '');
-  toastTab(tabId, 'Saved ' + filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok',
+  toastTab(tabId, 'Saved ' + res.filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok',
     { id: msg.id, actions: showAction(res.id) });
   ended();
 }
@@ -647,6 +665,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return false;
     }
+    // One of our own pages is about to download a file it made itself (the
+    // screenshot page). It says what the file should be called, because the
+    // naming listener lives here and would otherwise have nothing to suggest.
+    case 'expectName':
+      if (fromOwnPage(sender) && /^blob:chrome-extension:/.test(msg.url || '') && msg.filename) {
+        const clean = String(msg.filename).split('/').map(S.sanitizeSegment).filter(Boolean).join('/');
+        expectName(msg.url, clean, true);
+        // The page says when it is done; this is for one that closed first.
+        setTimeout(() => wanted.delete(msg.url), 10 * 60 * 1000);
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false });
+      }
+      return false;
+    case 'forgetName':
+      if (fromOwnPage(sender)) wanted.delete(msg.url);
+      sendResponse({ ok: true });
+      return false;
     case 'collectMedia': collectMedia(sender).then(sendResponse); return true;
     case 'feature': runFeature(msg.name, tabId).then(sendResponse); return true;
     case 'canRun':
