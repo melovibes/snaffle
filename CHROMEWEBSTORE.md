@@ -30,6 +30,8 @@ Gets the best version. When a page shows a small preview of a larger picture, Sn
 
 Saves streamed video as one file. Many sites play video in small pieces rather than as one file. Once a video has started playing, Snaffle can put the pieces back together into a single video file with its sound, and shows progress while it works.
 
+Saves a whole post. Alt + A saves every picture and video in the post you are pointing at. Where a post has several slides, Snaffle steps through them for you and puts the post back on the slide you were looking at.
+
 Captures the whole page. Alt + Shift + S takes a picture of the entire page, top to bottom, not just what fits in the window. It opens for you to check, then you save it as PNG, JPEG or PDF, or copy it. Headers that stay fixed while you scroll appear once, not on every screen.
 
 Lists everything on the page. Alt + Shift + I shows every image and video on the page in one grid. Filter by size or type, tick the ones you want, and download them together.
@@ -109,7 +111,7 @@ One box per permission in the dashboard. Each of these is written to be pasted i
 | `offscreen` | permissions | Opens a hidden page that joins the pieces of a streamed video into one file and holds large files while they are being saved. The background service worker cannot do this itself, because it cannot hold a file in memory for a download and may be stopped during a long one. |
 | `declarativeNetRequestWithHostAccess` | permissions | Some video sites only send video to requests that carry the address of the page the video is on. While a video the user asked for is being saved, a temporary session rule adds that address to the extension's own requests to that one site, and is removed when the save ends. It applies only to requests made by the extension itself. It blocks nothing and changes no request made by any web page. |
 | `<all_urls>` | host_permissions | The user chooses what to save by pointing at it on whatever page they are on, so the extension has to be able to see the element under the pointer on any site. Media is also commonly served from a different address than the page showing it, so saving it needs access to that address too, and capturing a full-page screenshot needs access to the page being captured. `activeTab` cannot be used instead, because the triggers are a key press or mouse click inside the page, which the user assigns themselves, and those do not grant `activeTab`. |
-| content script on `<all_urls>`, all frames | content_scripts | Tracks which element the mouse pointer is over, so that the user's trigger saves the right image or video, including media inside embedded frames. It reads nothing from the page until the user triggers a save, and shows the confirmation message. |
+| content script on `<all_urls>`, all frames | content_scripts | Tracks which element the mouse pointer is over, so that the user's trigger saves the right image or video, including media inside embedded frames. It reads nothing from the page until the user triggers a save, and shows the confirmation message. When the user asks for a whole post that has several slides, it presses that post's own next and back buttons to bring each slide into the page, then returns the post to the slide it was on. |
 
 **Remote code:** No. All code is in the package. The one third-party library (Mediabunny 1.65.2, `vendor/mediabunny.min.mjs`) is bundled unmodified; it is minified as published by its authors in the `mediabunny` npm package, not obfuscated, and it is open source (https://mediabunny.dev, MPL-2.0).
 
@@ -180,6 +182,7 @@ It has `manifest.json` at the top level and holds only what Chrome runs plus the
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 1.6.0 | 2026-11-17 | Stalled video downloads resume by themselves; the outcome message always arrives; the right video is chosen in a post of several; files are named for what their bytes are; one key saves a whole post. | Draft |
 | 1.5.1 | 2026-11-17 | Rebuilt videos, screenshots and in-page pictures are saved under their names in the chosen folder (they had been landing loose in Downloads under random names). | Draft |
 | 1.5.0 | 2026-11-17 | Adds saving Instagram video (picture and sound merged into one file) and names files from Instagram after their post. | Draft |
 | 1.4.1 | 2026-11-16 | First version prepared for the store. Hover-save by key or click, streamed video saved as one file, full-page screenshots with a results page, media list for bulk download. | Draft |

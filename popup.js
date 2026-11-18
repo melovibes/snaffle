@@ -61,6 +61,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     $('mouseWrap').classList.toggle('disabled', !cfg.mouse.enabled);
     $('keyWrap').title = cfg.key.enabled ? '' : 'This trigger is turned off in Settings';
     $('mouseWrap').title = cfg.mouse.enabled ? '' : 'This trigger is turned off in Settings';
+    $('postLabel').textContent = keyLabel(cfg.postKey);
+    $('postWrap').classList.toggle('disabled', !cfg.postKey.enabled);
+    $('postWrap').title = cfg.postKey.enabled ? '' : 'This trigger is turned off in Settings';
     $('captureLabel').textContent = cfg.captureKey.enabled ? keyLabel(cfg.captureKey) : 'no shortcut';
     $('galleryLabel').textContent = cfg.galleryKey.enabled ? keyLabel(cfg.galleryKey) : 'no shortcut';
     $('dest').textContent = 'Downloads' + (cfg.folder ? '/' + cfg.folder : '');

@@ -1,6 +1,6 @@
 /* Browser tests: the real extension, in real Chromium, against local fixtures.
      node test/browser/run.js            run everything
-     node test/browser/run.js grab       run one area (grab | stream | shot | list | ui | life)
+     node test/browser/run.js grab       run one area (grab | stream | ig | shot | list | ui | life)
 
    Each check states the behaviour a user should get and records what actually
    happened. A failing check is a defect in the extension, not a broken test.
@@ -62,6 +62,30 @@ const base = (u) => {
     const host = document.getElementById('__snaffle_ui');
     if (host && host.shadowRoot) host.shadowRoot.querySelectorAll('.toast').forEach((t) => t.remove());
   }).catch(() => {});
+
+  // Every message a page shows from now on, however briefly: a notice that is
+  // up for a moment between two polls is still something the user was told.
+  const watchToasts = (page) => page.evaluate(() => {
+    window.__seen = [];
+    if (window.__seenTimer) clearInterval(window.__seenTimer);
+    let watching = null;
+    const note = () => {
+      for (const m of watching.querySelectorAll('.toast .msg')) {
+        const t = m.textContent;
+        if (t && window.__seen[window.__seen.length - 1] !== t) window.__seen.push(t);
+      }
+    };
+    const attach = () => {
+      const host = document.getElementById('__snaffle_ui');
+      if (!host || !host.shadowRoot || watching === host.shadowRoot) return;
+      watching = host.shadowRoot;
+      new MutationObserver(note).observe(watching, { subtree: true, childList: true, characterData: true });
+      note();
+    };
+    attach();
+    window.__seenTimer = setInterval(attach, 50);
+  });
+  const seenToasts = (page) => page.evaluate(() => window.__seen || []).catch(() => []);
 
   // What a run of the extension left behind, observed three ways.
   async function outcome(hh, page, marks, wait) {
@@ -509,6 +533,80 @@ const base = (u) => {
     });
     A.slow(0);
     await slow.close();
+
+    await check('stream', 'S17', null, 'A piece of a stream that never arrives is asked for again, and the video is still saved whole', async () => {
+      await h.setCfg({ stallSeconds: 2 });
+      const pg = await openStream(A.origin + '/real/multi/master.m3u8');
+      const marks = await mark(h);
+      await clearToast(pg);
+      await h.hover(pg, '#v');
+      await watchToasts(pg);
+      // The next request for this piece is accepted and never answered.
+      A.stallNext(/\/real\/multi\/s1_1\.m4s$/);
+      const markA = A.mark();
+      await pg.keyboard.press('Alt+KeyS');
+      const end = Date.now() + 40000;
+      let video = null;
+      while (Date.now() < end && !video) {
+        video = (await h.apiDownloads()).find((d) => !marks.ids.has(d.id) && d.state === 'complete' && /^blob:/.test(d.url));
+        await sleep(300);
+      }
+      const said = await h.settledToast(pg, 5000);
+      const seen = (await seenToasts(pg)).filter((t) => /stalled/.test(t));
+      const asks = A.since(markA).filter((q) => /s1_1\.m4s$/.test(q.path)).length;
+      await pg.close();
+      await h.setCfg({ stallSeconds: 15 });
+      const p = video ? probe(fs.readFileSync(video.filename)) : { text: 'video never arrived' };
+      return { ok: !!video && whole(p) && asks >= 2 && seen.length > 0 && /^Saved /.test(said) && !/joined/.test(said),
+        observed: p.text + '; the stuck piece was asked for ' + asks + ' times; said on the way: ' + JSON.stringify(seen.slice(0, 2)) + '; then "' + said + '"' };
+    });
+
+    A.slow(500);
+    await check('stream', 'S18', null, 'The message that a video was saved survives its page being reloaded straight afterwards', async () => {
+      const pg = await openStream(A.origin + '/real/multi/master.m3u8');
+      await clearToast(pg);
+      await h.hover(pg, '#v');
+      await pg.keyboard.press('Alt+KeyS');
+      const end = Date.now() + 40000;
+      let first = '';
+      while (Date.now() < end) {
+        const t = await h.toast(pg);
+        first = t ? t.text : '';
+        if (/^Saved /.test(first)) break;
+        await sleep(150);
+      }
+      await pg.reload({ waitUntil: 'load' });
+      await sleep(2500);
+      const t = await h.toast(pg);
+      const again = t ? t.text : '';
+      await pg.close();
+      return { ok: /^Saved /.test(first) && again === first && t.actions.includes('Show in folder'),
+        observed: 'before the reload "' + first + '"; on the reloaded page "' + (again || '(nothing)') + '"' };
+    });
+
+    await check('stream', 'S19', null, 'When the tab that asked for a video is closed before it finishes, the outcome is shown in the tab in front', async () => {
+      const other = await h.newPage(A.origin + '/article.html');
+      const pg = await openStream(A.origin + '/real/multi/master.m3u8');
+      const marks = await mark(h);
+      await h.hover(pg, '#v');
+      await pg.keyboard.press('Alt+KeyS');
+      await sleep(900);
+      await pg.close();
+      await other.bringToFront();
+      const end = Date.now() + 40000;
+      let video = null;
+      while (Date.now() < end && !video) {
+        video = (await h.apiDownloads()).find((d) => !marks.ids.has(d.id) && d.state === 'complete' && /^blob:/.test(d.url));
+        await sleep(300);
+      }
+      let said = '';
+      const until = Date.now() + 6000;
+      while (Date.now() < until && !/^Saved /.test(said)) { const t = await h.toast(other); said = t ? t.text : ''; await sleep(200); }
+      await other.close();
+      return { ok: !!video && /^Saved Snaffle\/127\.0\.0\.1\//.test(said), observed: 'video ' + (video ? 'saved' : 'never arrived') + '; the other tab shows "' + (said || '(nothing)') + '"' };
+    });
+
+    A.slow(0);
   }
 
   /* =========================================================== instagram */
@@ -564,8 +662,10 @@ const base = (u) => {
       const ranged = firstCdn.filter((r) => r.start != null).length;
       // The fixture CDN answers 403 to a signature that is not byte-for-byte right,
       // so two whole files arriving is the proof the address was not rewritten.
-      return { ok: wholes.join() === 'a.mp4,v-hi.mp4' && ranged === 0,
-        observed: 'whole files asked for: ' + (wholes.join(', ') || 'none') + '; ranged requests by the extension: ' + ranged };
+      // The one range asked for is the start of the picture file, read for its index.
+      const heads = firstCdn.filter((r) => r.start != null).map((r) => r.file + ' ' + r.start + '-' + r.end);
+      return { ok: wholes.join() === 'a.mp4,v-hi.mp4' && ranged === 1 && heads[0] === 'v-hi.mp4 0-16383',
+        observed: 'whole files asked for: ' + (wholes.join(', ') || 'none') + '; ranges asked for by the extension: ' + (heads.join(', ') || 'none') };
     });
     await reel.close();
 
@@ -577,7 +677,8 @@ const base = (u) => {
       await page.close();
       if (!r.bytes) return { ok: false, observed: describe(r) };
       const p = probeIg(r.bytes);
-      const starts = asked.filter((x) => x.start != null).map((x) => Number(x.start));
+      // Leaving out the one look at the start of the file, for its index.
+      const starts = asked.filter((x) => x.start != null && x.end !== '16383').map((x) => Number(x.start));
       const inOrder = starts.length >= 4 && starts.every((s, i) => i === 0 ? s === 0 : s === starts[i - 1] + 50000 || s > starts[i - 1]);
       return { ok: wholeIg(p, 568) && inOrder && asked.some((x) => x.start == null),
         observed: p.text + '; picture file asked for whole ' + asked.filter((x) => x.start == null).length + ' time(s) and refused, then from bytes ' + starts.join(', ') };
@@ -621,6 +722,134 @@ const base = (u) => {
       const r = await grab(page, '#photo');
       await page.close();
       return { ok: gotFile(r, '503918273_18044_n.png') && /^Saved Snaffle\/instagram\.com\/some\.one-ABC_12-3-2\.png$/.test(r.toast || ''), observed: describe(r) };
+    });
+
+    /* ---- a download that goes quiet ---- */
+
+    // Start a save and wait for its outcome, keeping every message shown on the way.
+    const saveAndWatch = async (page, selector, key, timeout) => {
+      const marks = await mark(h);
+      await clearToast(page);
+      await h.hover(page, selector);
+      await watchToasts(page);
+      await page.keyboard.press(key);
+      const end = Date.now() + timeout;
+      let said = '';
+      while (Date.now() < end) {
+        const t = await h.toast(page);
+        said = t ? t.text : '';
+        if (/^(Saved |Could not|Cancelled|Stopped|Nothing)/.test(said) && !/still downloading|stalled at/.test(said)) break;
+        await sleep(200);
+      }
+      const out = await outcome(h, page, marks, 900);
+      const done = out.api.filter((d) => d.state === 'complete');
+      return Object.assign(out, { said, seen: await seenToasts(page), done });
+    };
+
+    await check('ig', 'I10', null, 'A video download that goes quiet part-way is said to have stalled, picked up from where it stopped, and saved whole', async () => {
+      await h.setCfg({ stallSeconds: 2 });
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?set=stall');
+      const markB = B.mark();
+      const r = await saveAndWatch(page, '#player', 'Alt+KeyS', 40000);
+      const asked = cdn(B.since(markB)).filter((x) => x.file === 'v-hi.mp4');
+      await page.close();
+      await h.setCfg({ stallSeconds: 15 });
+      const stalled = r.seen.filter((t) => /stalled at/.test(t));
+      const waiting = stalled.some((t) => /Waiting for the site/.test(t));
+      const retried = stalled.some((t) => /Trying again \(1 of 5\)/.test(t));
+      // The whole file is 170,118 bytes and the server went quiet after two fifths of it.
+      const resumedAt = asked.filter((x) => x.start != null && Number(x.start) > 20000).map((x) => Number(x.start));
+      if (!r.bytes) return { ok: false, observed: 'toast "' + r.said + '"; said on the way: ' + JSON.stringify(stalled) };
+      const p = probeIg(r.bytes);
+      return { ok: wholeIg(p, 568) && waiting && retried && resumedAt[0] === 68047 && /^Saved /.test(r.said) && !/no sound/.test(r.said),
+        observed: p.text + '; said on the way: ' + JSON.stringify(stalled.slice(0, 3)) + '; picked up from byte ' + (resumedAt.join(', ') || 'nowhere') + '; then "' + r.said + '"' };
+    });
+
+    await check('ig', 'I11', null, 'A download that never gets moving again is given up after five tries, with a reason, and nothing is saved', async () => {
+      await h.setCfg({ stallSeconds: 1 });
+      const page = await openIg('/instagram/reel/Df2aGgPtPZQ/?set=dead');
+      const began = Date.now();
+      const r = await saveAndWatch(page, '#player', 'Alt+KeyS', 60000);
+      await page.close();
+      await h.setCfg({ stallSeconds: 15 });
+      const tries = r.seen.filter((t) => /Trying again/.test(t)).map((t) => (/\((\d) of 5\)/.exec(t) || [])[1]);
+      return { ok: /^Could not save this video: the download stalled and 5 more tries did not get it moving$/.test(r.said) && r.done.length === 0 && tries.includes('5'),
+        observed: 'toast "' + r.said + '" after ' + Math.round((Date.now() - began) / 1000) + 's; tries announced: ' + Array.from(new Set(tries)).join(', ') + '; files saved: ' + r.done.length };
+    });
+
+    /* ---- a post with several slides ---- */
+
+    const openCar = async (slide) => {
+      const page = await h.newPage(IG + '/someone/p/CAROUSEL7/?carousel=1&start=' + slide);
+      await page.waitForFunction(() => /ready/.test(document.title), null, { timeout: 20000 });
+      await sleep(400);
+      return page;
+    };
+    const carState = (page) => page.evaluate(() => ({ slide: window.__car.index + 1, steps: window.__car.steps, loaded: window.__car.loaded, error: window.__car.error || '' }));
+
+    await check('ig', 'I09', null, 'In a post of several videos the one on show is saved, not the neighbour the page loaded after it, and it is not called a guess', async () => {
+      const page = await openCar(2);
+      const before = await carState(page);
+      const r2 = await grab(page, '#post', { settle: 25000 });
+      await page.click('button.step[aria-label="Weiter"]');
+      await sleep(700);
+      const r3 = await grab(page, '#post', { settle: 25000 });
+      await page.close();
+      if (!r2.bytes || !r3.bytes) return { ok: false, observed: 'slide 2: ' + describe(r2) + '; slide 3: ' + describe(r3) + '; page ' + JSON.stringify(before) };
+      const p2 = probeIg(r2.bytes), p3 = probeIg(r3.bytes);
+      const right = p2.frames === 120 && Math.abs(p2.seconds - 4) < 0.2 && p2.audio && p3.frames === 132 && Math.abs(p3.seconds - 4.4) < 0.2 && p3.audio;
+      const named = /someone-CAROUSEL7-2-568p\.mp4/.test(r2.toast) && /someone-CAROUSEL7-3-568p\.mp4/.test(r3.toast);
+      return { ok: right && named && !/best guess|check this/.test(r2.toast + r3.toast) && before.loaded.join() === '2,3',
+        observed: 'the page loaded slide ' + before.loaded.join(' then ') + ' (4.0s and 4.4s, both "4" in their addresses); on slide 2 saved ' + p2.text + ', on slide 3 saved ' + p3.text + '; toasts "' + r2.toast + '" / "' + r3.toast + '"' };
+    });
+
+    await check('ig', 'W01', null, 'One key saves every slide of a post, pictures and videos, each the right one, and leaves the post on the slide it was showing', async () => {
+      const page = await openCar(2);
+      const markA = A.mark();
+      const r = await saveAndWatch(page, '#post', 'Alt+KeyA', 90000);
+      const state = await carState(page);
+      const fetched = A.since(markA).map((q) => q.path.split('/').pop());
+      await page.close();
+      const pics = r.done.filter((d) => !/^blob:/.test(d.url)).map((d) => base(d.url)).sort();
+      const vids = r.done.filter((d) => /^blob:/.test(d.url)).map((d) => { try { return probeIg(fs.readFileSync(d.filename)); } catch (_) { return { frames: 0, audio: false, text: 'unreadable' }; } });
+      const frames = vids.map((v) => v.frames).sort((a, b) => a - b);
+      const ok = r.said === 'Saved all 5 from this post to Snaffle/instagram.com.' &&
+        pics.join() === 'slide-five.png,slide-four.png,slide-one.png' && frames.join() === '120,132' && vids.every((v) => v.audio) &&
+        state.slide === 2 && !fetched.includes('other-post.png') && r.anchors.length === 0;
+      return { ok, observed: 'toast "' + r.said + '"; pictures ' + (pics.join(', ') || 'none') + '; videos ' + (vids.map((v) => v.text).join(' | ') || 'none') +
+        '; the post is back on slide ' + state.slide + ' after ' + state.steps + ' steps; said on the way: ' + JSON.stringify(r.seen.filter((t) => /this post/.test(t)).slice(0, 2)) };
+    });
+
+    await check('ig', 'W02', null, 'Escape stops a whole-post save, says so, and still puts the post back where it was', async () => {
+      const page = await openCar(3);
+      const marks = await mark(h);
+      await clearToast(page);
+      await h.hover(page, '#post');
+      await page.keyboard.press('Alt+KeyA');
+      await page.keyboard.press('Escape');
+      const said = await h.settledToast(page, 8000);
+      await sleep(1500);
+      const state = await carState(page);
+      const files = (await h.apiDownloads()).filter((d) => !marks.ids.has(d.id)).length;
+      await page.close();
+      return { ok: /^Stopped before anything was saved\.$/.test(said) && files === 0 && state.slide === 3,
+        observed: 'toast "' + said + '"; downloads ' + files + '; the post is on slide ' + state.slide };
+    });
+
+    await check('ig', 'W03', null, 'On a post without slides the same key saves its own pictures: not the avatar, not a quoted post, not the post next to it', async () => {
+      const page = await h.newPage(A.origin + '/pages/post.html');
+      await sleep(500);
+      const r = await saveAndWatch(page, '#b', 'Alt+KeyA', 20000);
+      const pics = r.done.map((d) => base(d.url)).sort();
+      await clearToast(page);
+      await page.locator('#alone').scrollIntoViewIfNeeded();
+      await h.hover(page, '#alone');
+      await page.keyboard.press('Alt+KeyA');
+      const one = await h.settledToast(page, 6000);
+      await page.close();
+      return { ok: r.said === 'Saved all 3 from this post to Snaffle/127.0.0.1.' && pics.join() === 'first.png,second.png,third.png' &&
+          /^Saved Snaffle\/127\.0\.0\.1\/alone\.png$/.test(one),
+        observed: 'toast "' + r.said + '"; saved ' + (pics.join(', ') || 'nothing') + '; a picture in no post at all: "' + one + '"' };
     });
   }
 
@@ -1314,9 +1543,11 @@ const base = (u) => {
         return r.length;
       });
       const r = await grab(page, '#plain img');
-      const requests = r.reqA.filter((q) => /plain\.png/.test(q.path)).length;
+      const requests = r.reqA.filter((q) => /plain\.png/.test(q.path) && !q.range).length;
       await page.close();
-      return { ok: requests === 1 && r.api.length === 1, observed: 're-injected into ' + injected + ' frames; one key press made ' + requests + ' request(s) and ' + r.api.length + ' download(s)' };
+      // A save is one download, plus one look at the file's first bytes to name it by.
+      const looks = r.reqA.filter((q) => /plain\.png/.test(q.path) && q.range).length;
+      return { ok: requests === 1 && looks <= 1 && r.api.length === 1, observed: 're-injected into ' + injected + ' frames; one key press made ' + requests + ' request(s) for the file, ' + looks + ' for its first bytes, and ' + r.api.length + ' download(s)' };
     });
 
     // Reloading an unpacked extension under automation removes it for good, so

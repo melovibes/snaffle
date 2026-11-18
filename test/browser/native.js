@@ -252,11 +252,11 @@ async function check(id, expect, fn) {
       return verdict(toast, await arrived(), 'Snaffle/127.0.0.1/plain.png');
     });
 
-    await check('N02', 'A picture with no extension in its address is named for what the server sent (WebP)', async () => {
+    await check('N02', 'A picture with no extension in its address is named for what its bytes are (PNG), whatever the server calls it (WebP)', async () => {
       await grabPage.hover('#noext img');
       await grabPage.press('KeyS', 's', 83, 1);
       const toast = await settled(grabPage);
-      return verdict(toast, await arrived(), 'Snaffle/127.0.0.1/808080.webp');
+      return verdict(toast, await arrived(), 'Snaffle/127.0.0.1/808080.png');
     });
 
     await check('N03', 'A picture held only in the page (a canvas) is saved by name into the folder', async () => {
@@ -326,6 +326,122 @@ async function check(id, expect, fn) {
       await result.close();
       await page.close();
       return verdict(status, fresh, 'Snaffle/127.0.0.1/Tall fixture (1).png');
+    });
+
+    /* ---- named for what the bytes are ---- */
+
+    const typesPage = await b.open(A.origin + '/pages/types.html');
+    await typesPage.until('/ready/.test(document.title)');
+
+    await check('N09', 'WebP that its address and its server both call PNG is saved as .webp', async () => {
+      await typesPage.hover('#lie');
+      await typesPage.press('KeyS', 's', 83, 1);
+      const toast = await settled(typesPage);
+      return verdict(toast, await arrived(), 'Snaffle/127.0.0.1/photo.webp');
+    });
+
+    await check('N10', '...and so is WebP the server will only call "some bytes"', async () => {
+      await typesPage.hover('#vague');
+      await typesPage.press('KeyS', 's', 83, 1);
+      const toast = await settled(typesPage);
+      return verdict(toast, await arrived(), 'Snaffle/127.0.0.1/scan.webp');
+    });
+
+    await check('N11', '...and WebP the page holds in memory, where it has no name or type to go by', async () => {
+      await typesPage.hover('#held');
+      await typesPage.press('KeyS', 's', 83, 1);
+      const toast = await settled(typesPage);
+      const fresh = await arrived();
+      const want = said(toast);
+      const head = fresh.length === 1 ? fs.readFileSync(path.join(dlDir, fresh[0])).subarray(8, 12).toString('latin1') : '';
+      return { ok: fresh.length === 1 && fresh[0] === want && /^Snaffle\/127\.0\.0\.1\/.+\.webp$/.test(want) && head === 'WEBP',
+        observed: 'message "' + toast + '"; on disk: ' + (fresh.join(', ') || 'nothing new') + (head ? ' (bytes say ' + head + ')' : '') };
+    });
+    await typesPage.close();
+
+    /* ---- nothing half-written under a finished name ---- */
+
+    await check('N12', 'While a file is still arriving it is not there under its own name; it appears, complete, only when it is done', async () => {
+      const everything = () => { try { return fs.readdirSync(path.join(dlDir, 'Snaffle', '127.0.0.1')); } catch (_) { return []; } };
+      const full = fs.statSync(path.join(ROOT, 'test', 'browser', 'media', 'tiny.mp4')).size;
+      const page = await b.open(A.origin + '/pages/grab.html');
+      await sleep(600);
+      // The server sends half the file, waits four seconds, then sends the rest.
+      A.slowMedia(4000);
+      await page.hover('#video video');
+      await page.press('KeyS', 's', 83, 1);
+      let during = [], sawPartial = false, sawEarly = false;
+      const end = Date.now() + 3000;
+      while (Date.now() < end) {
+        const now = everything();
+        if (now.some((f) => /\.crdownload$/i.test(f))) { sawPartial = true; during = now; }
+        if (now.includes('tiny.mp4')) sawEarly = true;
+        await sleep(100);
+      }
+      A.slowMedia(0);
+      const fresh = await arrived(15000);
+      await sleep(500);
+      const after = everything();
+      const size = after.includes('tiny.mp4') ? fs.statSync(path.join(dlDir, 'Snaffle', '127.0.0.1', 'tiny.mp4')).size : 0;
+      await page.close();
+      return { ok: sawPartial && !sawEarly && fresh.join() === 'Snaffle/127.0.0.1/tiny.mp4' && size === full && !after.some((f) => /\.crdownload$/i.test(f)),
+        observed: 'while arriving the folder held ' + (during.filter((f) => /crdownload|tiny/.test(f)).join(', ') || 'no sign of it') +
+          (sawEarly ? ' AND tiny.mp4 already' : ', and no tiny.mp4') + '; afterwards tiny.mp4 of ' + size + ' bytes (the whole file is ' + full + ')' };
+    });
+
+    /* ---- a whole post ---- */
+
+    await check('N13', 'A whole post saved with one key lands as one named file per slide, numbered in order', async () => {
+      const page = await b.open('https://www.instagram.com:4711/someone/p/CAROUSEL7/?carousel=1&start=2');
+      await page.until('/ready/.test(document.title)', 20000);
+      await sleep(400);
+      await page.hover('#post');
+      await page.press('KeyA', 'a', 65, 1);
+      let toast = '';
+      const end = Date.now() + 60000;
+      while (Date.now() < end) {
+        toast = await page.toast();
+        if (/^Saved (all )?\d+ /.test(toast) && !/still downloading|stalled at/.test(toast)) break;
+        await sleep(300);
+      }
+      const fresh = await arrived(15000, 5);
+      const slide = await page.eval('window.__car.index + 1');
+      await page.close();
+      const want = ['someone-CAROUSEL7-1.png', 'someone-CAROUSEL7-2-568p.mp4', 'someone-CAROUSEL7-3-568p.mp4', 'someone-CAROUSEL7-4.png', 'someone-CAROUSEL7-5.png']
+        .map((f) => 'Snaffle/instagram.com/' + f);
+      return { ok: fresh.join() === want.join() && toast === 'Saved all 5 from this post to Snaffle/instagram.com.' && slide === 2,
+        observed: 'message "' + toast + '"; on disk: ' + (fresh.map((f) => f.split('/').pop()).join(', ') || 'nothing new') + '; the post is back on slide ' + slide };
+    });
+
+    /* ---- a message that arrives while nobody is looking ---- */
+
+    await check('N14', 'A message that arrives while its tab is in the background is still there, with its time ahead of it, when the tab comes back', async () => {
+      A.slow(700);
+      const page = await b.open(A.origin + '/pages/one-stream.html?src=' + encodeURIComponent(A.origin + '/real/multi/master.m3u8'));
+      await page.until('/ready/.test(document.title)');
+      await sleep(500);
+      await page.hover('#v');
+      await page.press('KeyS', 's', 83, 1);
+      await sleep(600);
+      const other = await b.open(A.origin + '/article.html');
+      await sleep(400);
+      const state = await page.eval('document.visibilityState');
+      const fresh = await arrived(40000);
+      A.slow(0);
+      // Longer than any message stays up once it is being looked at.
+      await sleep(17000);
+      const kept = await page.toast();
+      await other.close();
+      await page.send('Page.bringToFront');
+      await sleep(800);
+      const back = await page.eval('document.visibilityState');
+      const shown = await page.toast();
+      // And once it is in front, its time does run out.
+      await sleep(17000);
+      const later = await page.toast();
+      await page.close();
+      return { ok: state === 'hidden' && fresh.length === 1 && /^Saved /.test(kept) && /^Saved /.test(shown) && back === 'visible' && later === '',
+        observed: 'the tab was ' + state + ' when the video finished; 17s later, still in the background: "' + (kept || '(gone)') + '"; brought to the front: "' + (shown || '(gone)') + '"; 17s after that: ' + (later ? '"' + later + '"' : 'gone, as it should be') };
     });
 
     await check('N08', 'Nothing was left loose in Downloads under a made-up name', async () => {

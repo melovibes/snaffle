@@ -24,9 +24,42 @@ async function buildFilename(tok, cfg, index) {
   return S.buildPath(tok, cfg || await getCfg(), index || await nextIndex());
 }
 
+// A message for a tab. A progress update is replaced by the next one, so a
+// lost one does not matter. A verdict - saved, failed, cancelled - is said
+// once, so it has to arrive: if the tab cannot hear it just now (it is
+// reloading, or on its way to another page) it is offered again until the
+// page is back, and if the tab has gone it is shown in the tab the user is
+// looking at instead.
 function toastTab(tabId, text, kind, opts) {
   if (tabId == null || tabId < 0) return;
-  chrome.tabs.sendMessage(tabId, { type: 'toast', text, kind, opts }, { frameId: 0 }, () => void chrome.runtime.lastError);
+  const msg = { type: 'toast', text, kind, opts };
+  const send = (id) => new Promise((res) => {
+    chrome.tabs.sendMessage(id, msg, { frameId: 0 }, (r) => res(!chrome.runtime.lastError && !!(r && r.ok)));
+  });
+  send(tabId).then(async (heard) => {
+    if (heard || (opts && opts.sticky)) return;
+    for (let i = 0; i < 40; i++) {
+      await sleep(500);
+      let tab = null;
+      try { tab = await chrome.tabs.get(tabId); } catch (_) {}
+      if (!tab) break;
+      if (await send(tabId)) return;
+    }
+    const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (front && front.id != null && front.id !== tabId) await send(front.id);
+  }).catch(() => {});
+}
+
+// News of a video that is being saved as part of a whole post. The page that
+// asked for the post keeps one running message for all of it, so it is
+// offered the news first; if nobody there takes it (the page was reloaded
+// since), `otherwise` shows it the ordinary way.
+function jobNews(tabId, batch, news, otherwise) {
+  if (!batch || tabId == null || tabId < 0) { otherwise(); return; }
+  chrome.tabs.sendMessage(tabId, Object.assign({ type: 'batchNews', batch }, news), (r) => {
+    void chrome.runtime.lastError;
+    if (!(r && r.taken)) otherwise();
+  });
 }
 
 // The button a toast carries once its file is on disk.
@@ -81,7 +114,41 @@ const wanted = new Map();
 // the name is already right (we made the file ourselves); otherwise the
 // extension is corrected once the server has said what the file really is.
 function expectName(url, filename, exact) {
-  wanted.set(url, { filename, exact: !!exact });
+  const w = { filename, exact: !!exact, real: '' };
+  wanted.set(url, w);
+  return w;
+}
+
+// What a file at an address really is, from its first few bytes, beside what
+// its server calls it. A server's word is sometimes wrong (WebP served as
+// image/png) or no help at all (application/octet-stream), and a file should
+// be named for what it holds. Only the start is asked for, and the request is
+// dropped as soon as those bytes are in, whatever the server chose to send.
+// Answers { real, declared }, either of which may be ''.
+async function sniffUrl(url) {
+  const nothing = { real: '', declared: '' };
+  if (!/^https?:\/\//i.test(url || '')) return nothing;
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), 2500);
+  try {
+    const r = await fetch(url, { headers: { Range: 'bytes=0-63' }, credentials: 'include', signal: stop.signal });
+    if (!r.ok || !r.body) return nothing;
+    const reader = r.body.getReader();
+    let have = new Uint8Array(0);
+    while (have.length < 16) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const next = new Uint8Array(have.length + value.length);
+      next.set(have, 0); next.set(value, have.length);
+      have = next;
+    }
+    return { real: S.sniffType(have), declared: S.cleanMime(r.headers.get('content-type')) };
+  } catch (_) {
+    return nothing;
+  } finally {
+    clearTimeout(timer);
+    stop.abort();
+  }
 }
 
 // Runs for every download in the browser once its headers are in. Ours are
@@ -89,7 +156,11 @@ function expectName(url, filename, exact) {
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   const w = item.byExtensionId === chrome.runtime.id ? wanted.get(item.url) : null;
   if (!w) return;
-  w.finalName = w.exact ? w.filename : S.nameForMime(w.filename, item.mime);
+  // `real` is what the file's first bytes said it is, read before the
+  // download began. Chrome may still change the extension to agree with the
+  // type the server declares; the name reported afterwards is the one the
+  // file really got.
+  w.finalName = w.exact ? w.filename : S.nameForKind(w.filename, w.real || '', item.mime);
   suggest({ filename: w.finalName, conflictAction: 'uniquify' });
 });
 
@@ -131,7 +202,23 @@ async function recall(id) {
 }
 
 async function tryDownload(url, filename, cfg, sender) {
-  expectName(url, filename, false);
+  const probe = await sniffUrl(url);
+  // A picture sent as one type that is really another. Chrome names a
+  // download to agree with the type its server declares, so the browser's
+  // own downloader would save it under the wrong extension whatever name it
+  // was asked for. It is fetched here instead and saved as what it is.
+  // Pictures only: a mislabelled video is not worth holding in memory for.
+  const declared = S.MIME_EXT[probe.declared] ? probe.declared : '';
+  if (/^image\//.test(probe.real) && declared && declared !== probe.real) {
+    const got = await toOffscreen({ type: 'os:fetch', url, include: true });
+    if (got && got.ok) {
+      const res = await saveBlobUrl(got.url, S.nameForKind(filename, probe.real, ''), cfg);
+      if (res.ok || res.cancelled) return res;
+    } else {
+      closeOffscreenIfIdle();
+    }
+  }
+  expectName(url, filename, false).real = probe.real;
   try {
     const res = await startDownload({ url, filename, conflictAction: 'uniquify', saveAs: !!cfg.saveAs });
     if (!res.ok) return { ok: false, error: res.error, filename };
@@ -257,7 +344,8 @@ async function blobSave(msg) {
     : await buildFilename(msg.tokens, cfg);
   const sealed = await toOffscreen({ type: 'os:seal', id: msg.id, mime: msg.mime });
   if (!sealed || !sealed.ok) return { ok: false, error: (sealed && sealed.error) || 'the file could not be assembled' };
-  return saveBlobUrl(sealed.url, filename, cfg);
+  // Named for what the bytes are, where they are of a kind that can be told.
+  return saveBlobUrl(sealed.url, sealed.real ? S.nameForKind(filename, sealed.real, '') : filename, cfg);
 }
 
 // Last resort for a file the browser's downloader and the page were both
@@ -269,7 +357,7 @@ async function proxyGrab(msg) {
   const got = await toOffscreen({ type: 'os:fetch', url: msg.url });
   if (!got || !got.ok) { closeOffscreenIfIdle(); return { ok: false, error: (got && got.error) || 'the site could not be reached' }; }
   const asked = String(msg.filename || 'download').split('/').map(S.sanitizeSegment).filter(Boolean).join('/');
-  return saveBlobUrl(got.url, S.nameForMime(asked, got.mime), cfg);
+  return saveBlobUrl(got.url, S.nameForKind(asked, got.real, got.mime), cfg);
 }
 
 /* ----------------------------------------------- streamed video (sniffer) */
@@ -455,9 +543,10 @@ async function grabStream(msg, sender) {
 
   const id = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   const ruleId = await setReferer(found.url, msg.pageUrl || sender.tab.url || found.url);
+  const cfg = await getCfg();
   // Everything needed to finish the job travels with it, because this service
   // worker may have been stopped and restarted by the time it is done.
-  const job = { id, url: found.url, tabId, meta: { tokens: msg.tokens, guess, ruleId } };
+  const job = { id, url: found.url, tabId, stallSeconds: cfg.stallSeconds, meta: { tokens: msg.tokens, guess, ruleId, batch: msg.batch || null } };
   const ack = await toOffscreen({ type: 'os:stream', job });
   if (!ack || !ack.ok) { clearReferer(ruleId); return { found: true, started: false, error: 'the worker page did not start' }; }
   // Every frame, so Escape cancels from wherever keyboard focus happens to be.
@@ -466,20 +555,54 @@ async function grabStream(msg, sender) {
 }
 
 // A video made of separate picture and sound files: the worker page fetches
-// each whole and merges them into one MP4.
+// each whole and merges them into one MP4. When the tab has loaded more than
+// one video the worker page is given them all, with what the page says of
+// the one being pointed at, and settles which it is by reading the files.
 async function grabTracks(tracks, msg, sender) {
   const tabId = sender.tab.id;
-  const guess = !tracks.guessed ? ''
-    : tracks.posts > 1
-      ? ' - best guess: this page loaded ' + tracks.posts + ' videos and none could be matched to this one'
-      : ' - best guess: the site did not say which of its files belong to this video';
   const id = 'job-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   const ruleId = await setReferer(tracks.video, msg.pageUrl || sender.tab.url || tracks.video);
-  const job = { id, kind: 'tracks', video: tracks.video, audio: tracks.audio, tabId, meta: { tokens: msg.tokens, guess, ruleId } };
+  const cfg = await getCfg();
+  const job = {
+    id, kind: 'tracks', video: tracks.video, audio: tracks.audio, choices: tracks.choices,
+    want: { duration: Number(msg.duration) || 0, width: Number(msg.width) || 0, height: Number(msg.height) || 0 },
+    stallSeconds: cfg.stallSeconds, tabId,
+    meta: { tokens: msg.tokens, ruleId, batch: msg.batch || null }
+  };
   const ack = await toOffscreen({ type: 'os:stream', job });
   if (!ack || !ack.ok) { clearReferer(ruleId); return { found: true, started: false, error: 'the worker page did not start' }; }
   chrome.tabs.sendMessage(tabId, { type: 'streamStarted' }, () => void chrome.runtime.lastError);
   return { found: true, started: true, id };
+}
+
+// What the user is told when the video saved may not be the one they meant.
+function guessNote(msg, meta) {
+  if (meta.guess) return meta.guess;      // a playlist: settled when the job began
+  const n = msg.tied || msg.posts || 0;
+  switch (msg.guess) {
+    case 'tied': return ' - best guess: this page loaded ' + n + ' videos of exactly this length and nothing else told them apart';
+    case 'unmatched': return ' - best guess: this page loaded ' + n + ' videos and none could be matched to this one';
+    case 'untyped': return ' - best guess: the site did not say which of its files belong to this video';
+    case 'length': return ' - check this is the right video: the one this page was seen loading runs a different length';
+  }
+  return '';
+}
+
+// Progress of a job, from the worker page.
+function jobProgress(msg) {
+  let text = 'Downloading video: ' + msg.pct + '%', kind = 'busy';
+  if (msg.state === 'queued') text = 'Waiting for the videos ahead of this one...';
+  if (msg.state === 'stalled') {
+    // Said in so many words, so a bar that has stopped is never a mystery.
+    text = 'Video download stalled at ' + msg.pct + '%. ' +
+      (msg.attempt ? 'Trying again (' + msg.attempt + ' of ' + msg.of + ')...' : 'Waiting for the site...');
+    kind = 'warn';
+  }
+  jobNews(msg.tabId, msg.batch, { id: msg.id, pct: msg.pct, state: msg.state || '', attempt: msg.attempt || 0, of: msg.of || 0 },
+    () => toastTab(msg.tabId, text, kind, {
+      id: msg.id, sticky: true, progress: msg.pct,
+      actions: [{ label: 'Cancel', send: { type: 'cancelStreams', id: msg.id }, close: false }]
+    }));
 }
 
 async function finishStream(msg) {
@@ -491,13 +614,19 @@ async function finishStream(msg) {
     closeOffscreenIfIdle();
   };
 
-  // Each verdict replaces the job's own progress toast.
-  const at = { id: msg.id };
-  if (msg.cancelled) { toastTab(tabId, 'Cancelled.', 'warn', at); ended(); return; }
+  // Each verdict replaces the job's own progress toast, and is the one
+  // message that must not be missed: it is delivered even to a page that is
+  // reloading, and it stays up longer than a passing note.
+  const conclude = (text, kind, outcome, actions) => {
+    jobNews(tabId, meta.batch, Object.assign({ id: msg.id, done: true, text }, outcome),
+      () => toastTab(tabId, text, kind, { id: msg.id, linger: true, actions: actions || [] }));
+    ended();
+  };
+
+  if (msg.cancelled) { conclude('Cancelled.', 'warn', { cancelled: true }); return; }
   if (!msg.ok) {
     const why = String(msg.error || 'the stream could not be read');
-    toastTab(tabId, /^[A-Z]/.test(why) ? why : 'Could not save this video: ' + why, 'err', at);
-    ended();
+    conclude(/^[A-Z]/.test(why) ? why : 'Could not save this video: ' + why, 'err', { ok: false, error: why });
     return;
   }
 
@@ -509,19 +638,17 @@ async function finishStream(msg) {
   const filename = await buildFilename(tok, cfg);
   const res = await saveBlobUrl(msg.url, filename, cfg);
   if (!res.ok) {
-    if (res.cancelled) toastTab(tabId, 'Cancelled.', 'warn', at);
-    else toastTab(tabId, 'Could not save this video: ' + res.error, 'err', at);
-    ended();
+    if (res.cancelled) conclude('Cancelled.', 'warn', { cancelled: true });
+    else conclude('Could not save this video: ' + res.error, 'err', { ok: false, error: res.error });
     return;
   }
 
   const notes =
     (msg.silent ? ' - no sound: the audio track could not be included' : '') +
     (msg.joined ? ' - saved as joined segments, so some players may show the wrong length' : '') +
-    (meta.guess || '');
-  toastTab(tabId, 'Saved ' + res.filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok',
-    { id: msg.id, actions: showAction(res.id) });
-  ended();
+    guessNote(msg, meta);
+  conclude('Saved ' + res.filename + ' (' + S.sizeText(msg.size) + ')' + notes, notes ? 'warn' : 'ok',
+    { ok: true, filename: res.filename, note: notes, downloadId: res.id }, showAction(res.id));
 }
 
 /* ------------------------------------------------- screenshots and bulk ops */
@@ -695,6 +822,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       buildFilename(msg.tokens).then((f) => sendResponse({ ok: true, filename: f.split('/').pop(), path: f }));
       return true;
 
+    case 'toastsLost':
+      // A page that was showing the outcome of a job is going away (it is
+      // being reloaded, or the tab is moving on). The message goes to
+      // whatever the tab shows next.
+      if (sender.tab && sender.frameId === 0) {
+        for (const t of (msg.toasts || []).slice(0, 6)) {
+          toastTab(sender.tab.id, String(t.text || ''), t.kind, Object.assign({}, t.opts, { sticky: false, linger: true }));
+        }
+      }
+      sendResponse({ ok: true });
+      return false;
+
     case 'cancelStreams':
       // One job when its toast's Cancel is pressed; all of the tab's on Escape.
       if (sender.tab) toOffscreen({ type: 'os:cancel', tabId: sender.tab.id, id: msg.id || null });
@@ -723,7 +862,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'relayGrab':
       // Every frame hears this; only the one the pointer is in answers.
       if (!sender.tab) { sendResponse({ handled: false }); return false; }
-      chrome.tabs.sendMessage(sender.tab.id, { type: 'grabNow' }, (r) => {
+      chrome.tabs.sendMessage(sender.tab.id, { type: 'grabNow', what: msg.what || '' }, (r) => {
         void chrome.runtime.lastError;
         sendResponse({ handled: !!(r && r.handled) });
       });
@@ -731,12 +870,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // From the worker page. A tab cannot forge these: its messages carry a tab.
     case 'os:progress':
-      if (fromWorkerPage(sender)) {
-        toastTab(msg.tabId, 'Downloading video: ' + msg.pct + '%', 'busy', {
-          id: msg.id, sticky: true, progress: msg.pct,
-          actions: [{ label: 'Cancel', send: { type: 'cancelStreams', id: msg.id }, close: false }]
-        });
-      }
+      if (fromWorkerPage(sender)) jobProgress(msg);
       return false;
     case 'os:done':
       if (fromWorkerPage(sender)) finishStream(msg);

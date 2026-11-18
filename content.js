@@ -471,9 +471,10 @@
           const f = (p.searchParams.get('format') || '').toLowerCase();
           if (/^[a-z0-9]{1,5}$/.test(f)) ext = f;
           const who = hit.el && statusInfo(hit.el);
-          if (who) name = who.user + '-' + who.id;
+          // One of several pictures saved from the same post says which.
+          if (who) name = who.user + '-' + who.id + (hit.part ? '-' + hit.part : '');
         }
-        const ig = hit.el && instagramInfo(hit.el);
+        const ig = hit.el && instagramInfo(hit.el, hit.slide);
         if (ig) name = ig.name;
         if (!name) name = p.hostname;
       } catch (_) { name = 'media'; }
@@ -572,6 +573,7 @@
   //
   //   opts.id        update the toast with this id instead of adding one
   //   opts.sticky    stay until replaced or dismissed (work in progress)
+  //   opts.linger    the outcome of background work: stay up longer
   //   opts.progress  0-100, draws the bar
   //   opts.actions   [{ label, send }] - a button that sends `send` to the
   //                  service worker when pressed
@@ -594,6 +596,38 @@
     t.el.classList.remove('on');
     setTimeout(() => t.el.remove(), 220);
   }
+
+  // A message nobody was looking at has not been read. A toast's time only
+  // runs while this page is the one in front: one that arrives while the
+  // user is in another tab is still there, with its full time ahead of it,
+  // when they come back.
+  const inFront = () => document.visibilityState !== 'hidden';
+
+  function armToast(id) {
+    const t = toasts.get(id);
+    if (!t) return;
+    clearTimeout(t.timer);
+    t.timer = 0;
+    if (t.life && inFront()) t.timer = setTimeout(() => dismissToast(id), t.life);
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (dead) return;
+    for (const id of Array.from(toasts.keys())) armToast(id);
+  });
+
+  // The outcome of a background job is said once. If this page is reloaded
+  // or left while that message is still up, it is handed back to the
+  // extension, which shows it on whatever the tab loads next. From here on
+  // this page takes no more messages: it will not be here to show them.
+  let leaving = false;
+  window.addEventListener('pagehide', (e) => {
+    if (dead || e.persisted || window.top !== window) return;
+    leaving = true;
+    const lost = Array.from(toasts.values()).map((t) => t.kept).filter(Boolean);
+    if (lost.length) { try { chrome.runtime.sendMessage({ type: 'toastsLost', toasts: lost }, () => void chrome.runtime.lastError); } catch (_) {} }
+  });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) leaving = false; });
 
   function showToast(msg, kind, opts) {
     const o = opts || {};
@@ -651,9 +685,13 @@
       acts.appendChild(b);
     }
 
-    clearTimeout(t.timer);
     t.life = o.sticky ? 0 : (kind === 'err' ? 8000 : (o.actions && o.actions.length ? 6000 : 3000));
-    if (t.life) t.timer = setTimeout(() => dismissToast(id), t.life);
+    // The end of a job that ran in the background, which the user was
+    // probably not watching: it stays long enough to be noticed.
+    if (o.linger && t.life) t.life = Math.max(t.life, 15000);
+    // Kept so it can be shown again if this page goes away under it.
+    t.kept = o.linger && t.life ? { text: msg, kind, opts: { id: o.id, actions: o.actions || [] } } : null;
+    armToast(id);
   }
 
   // "Show in folder" for a download Chrome knows by id.
@@ -807,7 +845,7 @@
   const IG_POST = /^\/(?:([A-Za-z0-9._]+)\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/;
   const IG_NOT_A_USER = /^(p|reel|reels|tv|explore|accounts|direct|stories|about|legal|web|api)$/i;
 
-  function instagramInfo(el) {
+  function instagramInfo(el, slide) {
     if (!/(^|\.)instagram\.com$/i.test(location.hostname)) return null;
     const read = (href) => {
       try {
@@ -849,8 +887,12 @@
         if (m && !IG_NOT_A_USER.test(m[1])) { post.user = m[1]; break; }
       }
     }
-    const name = [post.user, post.id, /^\d+$/.test(index) ? index : ''].filter(Boolean).join('-');
-    return { user: post.user, id: post.id, index, name };
+    // Which slide of the post: as told by whoever is stepping through it,
+    // else read off the post's own row of slides, else from the address.
+    const car = !slide && el ? carouselOf(el) : null;
+    const number = slide || (car ? car.indexOf(car.slide) + 1 : 0) || (/^\d+$/.test(index) ? Number(index) : 0);
+    const name = [post.user, post.id, number ? String(number) : ''].filter(Boolean).join('-');
+    return { user: post.user, id: post.id, index: number ? String(number) : '', name };
   }
 
   const hostToken = () => location.hostname.replace(/^www\./, '');
@@ -861,45 +903,66 @@
 
   // A streamed video is rebuilt by the extension's worker page, not here: it
   // takes a while, it should not block other grabs, and it should survive this
-  // page navigating away. Returns true when the stream was taken on (or
-  // refused with a reason), false when no stream was ever seen for this video.
-  async function grabStream(videoEl) {
+  // page navigating away. Returns what became of it, or null when no stream
+  // was ever seen for this video.
+  //
+  // `part` is set when this video is one item of a whole post being saved:
+  // { batch, slide }. Then nothing is said here - the post keeps one running
+  // message for all of it - and the outcome is handed back instead:
+  // { ok, name, id } saved, { ok: false, error }, { cancelled } or { job }
+  // for a download now running in the background.
+  async function grabStream(videoEl, part, hit) {
+    const say = part ? () => {} : toast;
     const mediaId = streamMediaId(videoEl);
     const who = statusInfo(videoEl);
-    const ig = instagramInfo(videoEl);
+    const ig = instagramInfo(videoEl, hit && hit.slide);
     const tokens = {
-      name: ig ? ig.name : who ? who.user + '-' + who.id : (mediaId ? 'video-' + mediaId : 'video'),
+      name: ig ? ig.name : who ? who.user + '-' + who.id + (hit && hit.part ? '-' + hit.part : '') : (mediaId ? 'video-' + mediaId : 'video'),
       ext: 'mp4', kind: 'video', host: hostToken(), title: document.title || '', alt: ''
     };
-    // The video's length helps tell it from the others a feed has loaded.
+    // The video's exact length and shape tell it from the others a page has
+    // loaded: the slides either side of this one, the next posts in a feed.
     const duration = Number.isFinite(videoEl.duration) ? videoEl.duration : 0;
-    const res = await ask({ type: 'grabStream', mediaId, tokens, duration, pageUrl: location.href });
-    if (!res || !res.found) return false;
+    const res = await ask({
+      type: 'grabStream', mediaId, tokens, duration, width: videoEl.videoWidth || 0, height: videoEl.videoHeight || 0,
+      pageUrl: location.href, batch: part ? part.batch : null
+    });
+    if (!res || !res.found) return null;
 
     // The page was given a whole file after all.
     if (res.direct) {
-      if (res.cancelled) return true;
-      if (res.ok) { toast('Saved ' + res.filename + (res.guess || ''), res.guess ? 'warn' : 'ok', { actions: showAction(res.id) }); return true; }
+      if (res.cancelled) return { cancelled: true };
+      if (res.ok) {
+        say('Saved ' + res.filename + (res.guess || ''), res.guess ? 'warn' : 'ok', { actions: showAction(res.id) });
+        return { ok: true, name: res.filename, id: res.id, note: res.guess || '' };
+      }
       const fb = await fallback(res.url, res.filename || tokens.name + '.mp4');
-      if (fb.ok) announce('Saved ', fb.saved, res.guess, res.guess ? 'warn' : 'ok');
-      else toast('Could not save this video: ' + (fb.reason || res.error || 'the site blocked it'), 'err');
-      return true;
+      if (fb.ok) {
+        if (!part) announce('Saved ', fb.saved, res.guess, res.guess ? 'warn' : 'ok');
+        return fb.saved.cancelled ? { cancelled: true } : { ok: true, name: savedText(fb.saved), id: fb.saved.id, note: res.guess || '' };
+      }
+      const why = fb.reason || res.error || 'the site blocked it';
+      say('Could not save this video: ' + why, 'err');
+      return { ok: false, error: why };
     }
 
     if (!res.started) {
-      toast('Could not save this video: ' + (res.error || 'the download did not start'), 'err');
-      return true;
+      const why = res.error || 'the download did not start';
+      say('Could not save this video: ' + why, 'err');
+      return { ok: false, error: why };
     }
-    toast('Reading the stream...', 'busy', {
+    say('Reading the stream...', 'busy', {
       id: res.id, sticky: true, progress: 0,
       actions: [{ label: 'Cancel', send: { type: 'cancelStreams', id: res.id }, close: false }]
     });
-    return true;
+    return { job: res.id };
   }
 
   window.addEventListener('keydown', (e) => {
-    if (dead || !streaming || e.key !== 'Escape') return;
-    ask({ type: 'cancelStreams' });
+    if (dead || e.key !== 'Escape') return;
+    // A post being stepped through stops at the slide it is on.
+    for (const b of batches.values()) if (b.sweeping) b.stop = true;
+    if (streaming) ask({ type: 'cancelStreams' });
   }, true);
 
   // The guard is claimed before the first await, so a double tap cannot start
@@ -924,33 +987,48 @@
   }
 
   async function runGrab() {
-    let hit = resolve(elementStack());
+    const hit = resolve(elementStack());
     if (!hit) { toast('No image or video under the cursor', 'warn'); return; }
+    await saveHit(hit, null);
+  }
+
+  // Save one thing the resolver found. On its own (`part` null) it reports
+  // with toasts as it goes. As one item of a whole post (`part` is
+  // { batch, slide }) it says nothing and hands back what happened, in the
+  // shapes grabStream() describes, for the post's own running message.
+  async function saveHit(hit, part) {
+    const say = part ? () => {} : toast;
+    const done = (saved) => (saved.cancelled ? { cancelled: true } : { ok: true, name: savedText(saved), id: saved.id });
 
     // Canvas and SVG are only encoded now that a grab is really happening.
     if (hit.make) {
       const made = hit.make();
-      if (made.error) { toast(made.error, 'err'); return; }
+      if (made.error) { say(made.error, 'err'); return { ok: false, error: made.error }; }
       hit = Object.assign({}, hit, { url: made.url, make: null });
     }
 
     // Streamed (MSE) video: its blob URL is not fetchable, so rebuild it from
     // the HLS playlist the player used. Poster frame is the last resort.
+    let coverOnly = false;
     if (hit.kind === 'video' && (hit.stream || (hit.url.startsWith('blob:') && !(await canFetch(hit.url))))) {
       if (cfg.streamAssembly !== false && hit.el) {
-        flash(hit.el);
-        if (await grabStream(hit.el)) return;
+        if (!part) flash(hit.el);
+        const taken = await grabStream(hit.el, part, hit);
+        if (taken) return taken;
       }
       if (cfg.posterFallback && hit.poster) {
-        hit = { url: hit.poster, kind: 'image', el: hit.el, posterFallbackUsed: true };
+        hit = { url: hit.poster, kind: 'image', el: hit.el, posterFallbackUsed: true, slide: hit.slide, part: hit.part };
+        coverOnly = true;
       } else {
-        toast('This video is streamed in segments and cannot be saved directly.', 'err');
-        return;
+        const why = 'This video is streamed in segments and cannot be saved directly.';
+        say(why, 'err');
+        return { ok: false, error: 'the video is streamed in pieces and none of them were seen loading' };
       }
     }
 
-    flash(hit.el);
+    if (!part) flash(hit.el);
     const prefix = hit.posterFallbackUsed ? 'Streamed video - saved poster: ' : 'Saved ';
+    const note = coverOnly ? 'only the still picture of the video was saved' : '';
 
     // Bytes that exist only in this page: an encoded canvas, an inline SVG, an
     // image the page built in memory.
@@ -958,9 +1036,10 @@
       const tok = tokensFor(hit);
       const named = await ask({ type: 'buildName', tokens: tok });
       const blob = /^data:/i.test(hit.url) ? dataUrlToBlob(hit.url) : await (await fetch(hit.url)).blob();
-      if (!blob) { toast('That image could not be read.', 'err'); return; }
-      announce(prefix, await saveBlob(blob, (named && named.path) || tok.name + '.' + tok.ext));
-      return;
+      if (!blob) { say('That image could not be read.', 'err'); return { ok: false, error: 'the image could not be read' }; }
+      const saved = await saveBlob(blob, (named && named.path) || tok.name + '.' + tok.ext);
+      if (!part) announce(prefix, saved);
+      return Object.assign(done(saved), { note });
     }
 
     // Try the best address first, then each fallback, ending with the one the
@@ -968,16 +1047,321 @@
     // so "Saved" means a real file of the right kind is arriving.
     const candidates = [hit.url].concat(hit.alts || []).map((u) => ({ url: u, tokens: tokensFor(hit, u) }));
     const tid = 'grab-' + Date.now();
-    const slow = setTimeout(() => toast('Saving...', 'busy', { id: tid, sticky: true }), 600);
+    const slow = part ? 0 : setTimeout(() => toast('Saving...', 'busy', { id: tid, sticky: true }), 600);
     const res = await ask({ type: 'grab', candidates, pageUrl: location.href });
     clearTimeout(slow);
-    if (res && res.ok) { toast(prefix + res.filename, 'ok', { id: tid, actions: showAction(res.id) }); return; }
-    if (res && res.cancelled) { toast('Cancelled.', 'warn', { id: tid }); return; }
+    if (res && res.ok) {
+      say(prefix + res.filename, 'ok', { id: tid, actions: showAction(res.id) });
+      return { ok: true, name: res.filename, id: res.id, note };
+    }
+    if (res && res.cancelled) { say('Cancelled.', 'warn', { id: tid }); return { cancelled: true }; }
 
     const last = candidates[candidates.length - 1];
     const fb = await fallback(last.url, (res && res.filename) || last.tokens.name + '.' + last.tokens.ext);
-    if (fb.ok) announce(prefix, fb.saved, '', 'ok', tid);
-    else toast('Could not save this: ' + (fb.reason || (res && res.error) || 'the site blocked it'), 'err', { id: tid });
+    if (fb.ok) {
+      if (!part) announce(prefix, fb.saved, '', 'ok', tid);
+      return Object.assign(done(fb.saved), { note });
+    }
+    const why = fb.reason || (res && res.error) || 'the site blocked it';
+    say('Could not save this: ' + why, 'err', { id: tid });
+    return { ok: false, error: why };
+  }
+
+  /* ---------------------------------------------------------- a whole post */
+
+  // A post with several slides, built the way Instagram builds one: a row
+  // whose items are each put in place by a sideways transform, of which only
+  // the slide on show and its neighbours are in the page at any moment, a
+  // frame that row slides through, and a button at each side to step along.
+  // Nothing here goes by the site's class names or by the wording of its
+  // buttons, both of which change; it goes by how the thing is laid out.
+  const SLIDE_X = /translateX\(\s*(-?[\d.]+)px/;
+  const slideX = (el) => {
+    const m = SLIDE_X.exec((el.getAttribute && el.getAttribute('style')) || '');
+    return m ? parseFloat(m[1]) : null;
+  };
+
+  function carouselOf(el) {
+    let inside = el;
+    for (const row of ancestors(el).slice(1)) {
+      // `inside` is the child of `row` that the element sits in.
+      const kids = row.children ? Array.from(row.children) : [];
+      const placed = kids.filter((k) => slideX(k) != null);
+      const slide = inside;
+      inside = row;
+      if (placed.length < 2 || !placed.includes(slide)) continue;
+      const width = slide.getBoundingClientRect().width;
+      if (width < 50) continue;
+
+      // The frame is the nearest box around the row that is one slide wide
+      // and has more than that to scroll through.
+      let frame = null;
+      for (let n = row.parentElement, up = 0; n && up < 4; n = n.parentElement, up++) {
+        if (Math.abs(n.clientWidth - width) <= 2 && n.scrollWidth > n.clientWidth + 2) { frame = n; break; }
+      }
+      const car = {
+        row, slide, width, frame: frame || row.parentElement || row,
+        indexOf: (s) => Math.round((slideX(s) || 0) / width),
+        // Slides in the page right now, by number from 0.
+        at: (i) => Array.from(row.children).find((k) => slideX(k) != null && k.querySelector('img, video') && Math.round(slideX(k) / width) === i) || null,
+        count() {
+          if (frame) return Math.max(1, Math.round(frame.scrollWidth / width));
+          // Failing that, the row ends in a marker one pixel wide, placed
+          // where the last slide ends.
+          const end = Array.from(row.children).filter((k) => slideX(k) != null && !k.querySelector('img, video')).pop();
+          return end ? Math.max(1, Math.round((slideX(end) + 1) / width)) : 0;
+        }
+      };
+      return car;
+    }
+    return null;
+  }
+
+  // The button that steps a row of slides on (dir 1) or back (dir -1): a
+  // small control lying over the frame, half-way up, at that side of it.
+  function stepButton(car, dir) {
+    const box = car.frame.getBoundingClientRect();
+    if (!box.width || !box.height) return null;
+    let root = car.frame;
+    for (let up = 0; up < 6 && root.parentElement; up++) {
+      root = root.parentElement;
+      for (const b of root.querySelectorAll('button, [role="button"]')) {
+        if (car.row.contains(b)) continue;
+        const q = b.getBoundingClientRect();
+        if (!q.width || !q.height || q.width > box.width / 3) continue;
+        const cx = q.left + q.width / 2, cy = q.top + q.height / 2;
+        if (cx <= box.left || cx >= box.right) continue;
+        if (Math.abs(cy - (box.top + box.height / 2)) > box.height * 0.3) continue;
+        const side = cx > box.left + box.width * 0.75 ? 1 : cx < box.left + box.width * 0.25 ? -1 : 0;
+        if (side === dir) return b;
+      }
+    }
+    return null;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const until = async (test, ms) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (test()) return true; await sleep(100); }
+    return test();
+  };
+  const biggest = (list) => Array.from(list).map((el) => ({ el, r: el.getBoundingClientRect() }))
+    .filter((x) => x.r.width && x.r.height).sort((a, b) => b.r.width * b.r.height - a.r.width * a.r.height).map((x) => x.el)[0] || null;
+
+  // What one slide holds: its video once the player has loaded it, with the
+  // cover picture as the fallback, or else its picture.
+  async function slideHit(li) {
+    const v = li.querySelector('video');
+    if (v) await until(() => v.readyState >= 1 || !v.isConnected, 6000);
+    const img = biggest(li.querySelectorAll('img'));
+    if (img) await until(() => img.complete, 3000);
+    const cover = img ? fromImg(img) : null;
+    if (v && hasMedia(v)) {
+      const hit = fromVideo(v);
+      if (hit && hit.kind === 'video') return Object.assign({}, hit, { poster: hit.poster || (cover && cover.url) || '' });
+    }
+    return cover;
+  }
+
+  // Posts being saved whole: id -> { total, at, items, jobs, sweeping, stop }.
+  const batches = new Map();
+
+  // One running message for the whole post, rewritten as things happen.
+  function renderBatch(b) {
+    const jobs = Array.from(b.jobs.values());
+    const live = jobs.filter((j) => !j.done);
+    const saved = b.items.filter((x) => x.ok).length + jobs.filter((j) => j.done && j.ok).length;
+    const missed = b.items.filter((x) => !x.ok && !x.cancelled && !x.job)
+      .concat(jobs.filter((j) => j.done && !j.ok && !j.cancelled));
+    const asked = b.items.length;
+
+    if (b.sweeping) {
+      toast('Saving this post: ' + (b.total ? b.at + ' of ' + b.total : 'slide ' + b.at) + '... (Esc to stop)', 'busy',
+        { id: b.id, sticky: true, progress: b.total ? Math.round(((b.at - 1) / b.total) * 100) : null });
+      return;
+    }
+    if (live.length) {
+      const stuck = live.find((j) => j.state === 'stalled');
+      const pct = Math.round(live.reduce((n, j) => n + (j.pct || 0), 0) / live.length);
+      const what = live.length === 1 ? '1 video' : live.length + ' videos';
+      toast(stuck
+        ? 'Saved ' + saved + ' of ' + asked + ' from this post. A video download stalled at ' + (stuck.pct || 0) + '%. ' +
+          (stuck.attempt ? 'Trying again (' + stuck.attempt + ' of ' + stuck.of + ')...' : 'Waiting for the site...')
+        : 'Saved ' + saved + ' of ' + asked + ' from this post. ' + what + ' still downloading: ' + pct + '%',
+        stuck ? 'warn' : 'busy',
+        { id: b.id, sticky: true, progress: pct, actions: [{ label: 'Cancel', send: { type: 'cancelStreams' }, close: false }] });
+      return;
+    }
+
+    batches.delete(b.id);
+    const names = b.items.filter((x) => x.ok && x.name).map((x) => x.name).concat(jobs.filter((j) => j.ok && j.name).map((j) => j.name));
+    const folder = names.length && names[0].includes('/') ? names[0].slice(0, names[0].lastIndexOf('/')) : '';
+    const lastId = b.items.concat(jobs).map((x) => x.id || x.downloadId).filter((x) => x != null).pop();
+    const label = (x) => (b.total > 1 || asked > 1 ? 'item ' + x.n + ' (' : '(') + (x.error || 'not saved') + ')';
+    const notes = b.items.concat(jobs).filter((x) => x.ok && x.note).map((x) => 'item ' + x.n + ': ' + String(x.note).replace(/^ - /, ''));
+    const dropped = b.items.filter((x) => x.cancelled).length + jobs.filter((j) => j.cancelled).length;
+    const stopped = (b.stop ? ' Stopped before the end.' : '') + (dropped ? ' ' + dropped + ' cancelled.' : '');
+    if (!asked) {
+      toast(b.stop ? 'Stopped before anything was saved.' : 'Nothing in this post could be saved.', b.stop ? 'warn' : 'err', { id: b.id, linger: true });
+      return;
+    }
+    if (!missed.length && saved === asked) {
+      toast('Saved all ' + saved + ' from this post' + (folder ? ' to ' + folder : '') + '.' + stopped + (notes.length ? ' Note - ' + notes.join('; ') : ''),
+        notes.length || stopped ? 'warn' : 'ok', { id: b.id, linger: true, actions: showAction(lastId) });
+      return;
+    }
+    toast('Saved ' + saved + ' of ' + asked + ' from this post' + (folder ? ' to ' + folder : '') + '.' + stopped +
+      (missed.length ? ' Not saved: ' + missed.map(label).join(', ') + '.' : '') + (notes.length ? ' Note - ' + notes.join('; ') : ''),
+      saved ? 'warn' : 'err', { id: b.id, linger: true, actions: showAction(lastId) });
+  }
+
+  // Save one item of a post and file what happened under the post.
+  async function saveItem(b, hit, n, slide) {
+    let out;
+    try {
+      out = hit ? await saveHit(hit, { batch: b.id, slide }) : { ok: false, error: 'nothing on this slide could be read' };
+    } catch (e) {
+      out = { ok: false, error: String((e && e.message) || e) };
+    }
+    out.n = n;
+    b.items.push(out);
+    if (out.job) {
+      // A video now downloading in the background. News of it comes later.
+      const j = b.jobs.get(out.job) || { pct: 0 };
+      j.n = n;
+      b.jobs.set(out.job, j);
+    }
+  }
+
+  // Step through every slide of a carousel, saving each, and put the post
+  // back on the slide it was showing.
+  async function sweep(car, b) {
+    const step = async (dir) => {
+      const btn = stepButton(car, dir);
+      if (!btn) return false;
+      btn.click();
+      await sleep(350);
+      return true;
+    };
+    let start = 0;
+    while (start < 40 && await step(-1)) start++;
+
+    b.total = car.count();
+    let pos = 0;
+    for (; pos < 40; pos++) {
+      if (b.stop || !car.row.isConnected) break;
+      b.at = pos + 1;
+      renderBatch(b);
+      await until(() => !!car.at(pos), 3000);
+      const li = car.at(pos);
+      const hit = li ? await slideHit(li) : null;
+      if (hit) hit.slide = pos + 1;
+      await saveItem(b, hit, pos + 1, pos + 1);
+      if (b.total && pos + 1 >= b.total) break;
+      if (b.stop || !(await step(1))) break;
+    }
+    // Back to where the user was.
+    for (let i = 0; i < 40 && pos > start; i++, pos--) if (!(await step(-1))) break;
+    for (let i = 0; i < 40 && pos < start; i++, pos++) if (!(await step(1))) break;
+  }
+
+  // Without slides to step through, a post is whatever encloses the thing
+  // under the pointer: every picture and video of any size inside it.
+  function postItems(hit) {
+    const POST = 'article, [role="article"]';
+    const el = hit.el && hit.el.closest ? hit.el : null;
+    const scope = el && (el.closest(POST) || el.closest('figure'));
+    if (!scope) return [hit];
+    const out = [], seen = new Set();
+    const add = (h) => {
+      const key = h && (h.url || h.el);
+      if (!h || seen.has(key)) return;
+      seen.add(key);
+      out.push(h);
+    };
+    const videos = Array.from(scope.querySelectorAll('video'));
+    for (const m of scope.querySelectorAll('img, video')) {
+      if (out.length >= 40) break;
+      // A post quoted inside this one is a post of its own.
+      if (scope.matches(POST) && m.closest(POST) !== scope) continue;
+      const r = m.getBoundingClientRect();
+      if (r.width < 100 || r.height < 100) continue;
+      // A cover picture lying over a video is that video, listed once.
+      if (m.tagName === 'IMG' && videos.some((v) => {
+        const q = v.getBoundingClientRect();
+        return Math.abs(q.left - r.left) <= 4 && Math.abs(q.top - r.top) <= 4 && Math.abs(q.width - r.width) <= 8 && Math.abs(q.height - r.height) <= 8;
+      })) continue;
+      add(mediaFrom(m));
+    }
+    if (hit.el && !out.some((h) => h.el === hit.el)) add(hit);
+    return out.length ? out : [hit];
+  }
+
+  async function runPost() {
+    const hit = resolve(elementStack());
+    if (!hit) { toast('No post under the cursor', 'warn'); return; }
+    const b = { id: 'post-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8), total: 0, at: 0, items: [], jobs: new Map(), sweeping: true, stop: false };
+    batches.set(b.id, b);
+    if (hit.el) flash(hit.el);
+    try {
+      const car = hit.el ? carouselOf(hit.el) : null;
+      if (car && car.count() > 1) {
+        await sweep(car, b);
+      } else {
+        const list = postItems(hit);
+        if (list.length === 1) {
+          // Nothing around it to make a post of: the one thing, saved and
+          // reported the ordinary way.
+          batches.delete(b.id);
+          b.single = true;
+          await saveHit(list[0], null);
+          return;
+        }
+        b.total = list.length;
+        for (let i = 0; i < list.length && !b.stop; i++) {
+          b.at = i + 1;
+          renderBatch(b);
+          if (list.length > 1) list[i].part = i + 1;
+          await saveItem(b, list[i], i + 1, 0);
+        }
+      }
+    } finally {
+      b.sweeping = false;
+      if (!b.single) renderBatch(b);
+    }
+  }
+
+  // News of a video belonging to a post this frame is saving.
+  function batchNews(msg) {
+    const b = batches.get(msg.batch);
+    if (!b) return false;
+    const j = b.jobs.get(msg.id) || { n: 0, pct: 0 };
+    b.jobs.set(msg.id, j);
+    if (msg.done) {
+      Object.assign(j, { done: true, ok: !!msg.ok, cancelled: !!msg.cancelled, name: msg.filename || '', error: msg.error || '', note: msg.note || '', downloadId: msg.downloadId });
+    } else {
+      Object.assign(j, { pct: msg.pct || 0, state: msg.state || '', attempt: msg.attempt || 0, of: msg.of || 0 });
+    }
+    if (!b.sweeping) renderBatch(b);
+    return true;
+  }
+
+  async function post() {
+    if (dead) return;
+    if (!alive()) {
+      dead = true;
+      showToast('Snaffle was updated. Reload this page to use it here.', 'warn');
+      return;
+    }
+    if (!cfg.enabled || busy) return;
+    busy = true;
+    try {
+      await runPost();
+    } catch (e) {
+      toast('Could not save this post: ' + ((e && e.message) || e), 'err');
+    } finally {
+      busy = false;
+    }
   }
 
   /* ----------------------------------------------- shared with sibling files */
@@ -992,7 +1376,7 @@
     ui, toast, dismissToast, showAction, flash, ask, pageDownload, toBase64, saveBlob, savedText, announce, fallback,
     resolve, elementStack, ancestors, tokensFor, statusInfo, instagramInfo, hostToken,
     fromImg, fromVideo, fromBackground, linkFor, fallbacks,
-    abs, upgrade, parseSrcset, grab,
+    abs, upgrade, parseSrcset, grab, post, carouselOf, stepButton, postItems,
     capture: null,        // set by capture.js when it is loaded on demand
     gallery: null,        // set by gallery.js likewise, in the top frame
     galleryLoaded: false  // set by gallery.js in every frame it is loaded into
@@ -1028,6 +1412,14 @@
     });
   }
 
+  // The same for saving the whole post the pointer is on.
+  function keyPost() {
+    if (pointerHere() && !overFrame()) { post(); return; }
+    ask({ type: 'relayGrab', what: 'post' }).then((r) => {
+      if (!r || !r.handled) toast('No post under the cursor', 'warn');
+    });
+  }
+
   // The screenshot and media-list code is not in the page until it is asked
   // for. The service worker loads it into the top frame and starts it, which
   // also covers a key pressed while focus is inside an iframe.
@@ -1040,6 +1432,7 @@
   const KEY_ACTIONS = [
     ['captureKey', () => runFeature('capture')],
     ['galleryKey', () => runFeature('gallery')],
+    ['postKey', keyPost],
     ['key', keyGrab]
   ];
 
@@ -1108,7 +1501,7 @@
       // Broadcast to every frame. Only the one the pointer is in answers, so
       // the sender can tell whether anybody took it.
       if (!pointerHere() || overFrame()) return false;
-      grab();
+      if (msg.what === 'post') post(); else grab();
       send({ handled: true });
     } else if (msg.type === 'downloadFailed') {
       // A download that started and then died. Never leave "Saved" standing.
@@ -1117,7 +1510,14 @@
         else toast('Could not save ' + String(msg.filename).split('/').pop() + ': ' + (fb.reason || msg.error || 'the site blocked it'), 'err');
       });
       send({ ok: true });
+    } else if (msg.type === 'batchNews') {
+      // Only the frame that is saving that post answers, so the sender can
+      // tell when nobody is and show the news the ordinary way.
+      if (!batchNews(msg)) return false;
+      send({ taken: true });
     } else if (msg.type === 'toast') {
+      // No answer from a page on its way out, so the sender tries again.
+      if (leaving) return false;
       if (window.top === window) showToast(msg.text, msg.kind, msg.opts);
       send({ ok: true });
     } else if (msg.type === 'streamStarted') { streaming++; send({ ok: true }); }

@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Types fixture</title>
+<style> img { display: block; width: 200px; height: 150px; margin: 20px; } </style></head>
+<body>
+<!-- Files that are not what they are called. Every one of these is WebP.
+       #lie     the address says .png and so does the server
+       #vague   the address says .png and the server says only "some bytes"
+       #held    the page fetched it and holds it in memory, where it has no
+                name at all -->
+<img id="lie" src="/lie/photo.png" alt="">
+<img id="vague" src="/lie/scan.png?ct=application/octet-stream" alt="">
+<img id="held" alt="">
+<script>
+(async () => {
+  const blob = await (await fetch('/lie/held.png')).blob();
+  document.getElementById('held').src = URL.createObjectURL(blob);
+  await new Promise((r) => setTimeout(r, 200));
+  document.title = 'Types fixture ready';
+})();
+</script>
+</body></html>

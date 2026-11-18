@@ -44,6 +44,9 @@ eq('...on a path with forward slashes too',
 eq('...and with no extension', S.landedName('Snaffle/a/file', '/d/Snaffle/a/file (3)'), 'Snaffle/a/file (3)');
 eq('a file that was already called "x (1)" is not mistaken for a renamed "x"',
   S.landedName('Snaffle/a/x (1).png', '/d/Snaffle/a/x (1).png'), 'Snaffle/a/x (1).png');
+eq('the extension Chrome settled on is reported too',
+  [S.landedName('Snaffle/a/pic.png', '/d/Snaffle/a/pic.webp'), S.landedName('Snaffle/a/pic.png', '/d/Snaffle/a/pic (2).webp'), S.landedName('Snaffle/a/My.capture.png', '/d/My.capture (1).png')],
+  ['Snaffle/a/pic.webp', 'Snaffle/a/pic (2).webp', 'Snaffle/a/My.capture (1).png']);
 eq('any other name on disk is not believed (a test browser saves under ids)',
   [S.landedName('Snaffle/a/pic.png', '/tmp/dl/3f2a9c1e-77aa'), S.landedName('Snaffle/a/pic.png', '/d/pic (x).png'), S.landedName('Snaffle/a/pic.png', '')],
   ['Snaffle/a/pic.png', 'Snaffle/a/pic.png', 'Snaffle/a/pic.png']);
@@ -109,11 +112,64 @@ eq('any other name on disk is not believed (a test browser saves under ids)',
     [untyped.video, untyped.audio, untyped.guessed, untyped.typed], [CDN + 'c.mp4?oh=1', CDN + 'b.mp4?oh=1', true, false]);
 }
 
+/* ------------------------------------- telling one loaded video from another */
+
+{
+  const start = (f) => new Uint8Array(fs.readFileSync(path.join(ROOT, 'test/browser/media/ig', f)).subarray(0, 16384));
+  const size = (f) => fs.statSync(path.join(ROOT, 'test/browser/media/ig', f)).size;
+  const hi = T.head(start('v-hi.mp4')), lo = T.head(start('v-lo.mp4')), au = T.head(start('a.mp4')), b = T.head(start('v-b.mp4'));
+  eq('the start of a picture file gives its exact length and its shape',
+    [hi.duration, hi.width, hi.height, hi.audio], [4, 320, 568, false]);
+  eq('...and of a sound file, its length, and that it is sound', [Math.round(au.duration * 1000), au.audio, au.width], [4023, true, 0]);
+  eq('...and never claims more bytes than the file has',
+    [hi.size > 160000 && hi.size <= size('v-hi.mp4'), lo.size > 30000 && lo.size <= size('v-lo.mp4')], [true, true]);
+  eq('a second clip of the same whole seconds runs a different exact length', [Math.round(b.duration * 10) / 10, b.width, b.height], [4.4, 320, 568]);
+  eq('a start cut off before its index ends is not added up wrongly',
+    T.head(start('v-hi.mp4').subarray(0, 800)).size, 0);
+  eq('bytes that are not a video say nothing', [T.head(new Uint8Array(64)), T.head(new Uint8Array(4))], [null, null]);
+
+  const m = (heads, want) => { const r = T.match(heads, want); return [r.index, r.exact, r.matched]; };
+  eq('of three loaded videos, the one of exactly the right length is it',
+    m([{ duration: 12.48 }, { duration: 12.012 }, { duration: 11.6 }], { duration: 12.012 }), [1, true, true]);
+  eq('...however recently the others were asked for', m([b, hi], { duration: 4 }), [1, true, true]);
+  eq('sound that runs a shade longer than the picture still matches', m([{ duration: 63.4635 }], { duration: 63.4667 }), [0, true, true]);
+  eq('two clips of the very same length are told apart by shape',
+    m([{ duration: 10, width: 1080, height: 1080 }, { duration: 10, width: 1080, height: 1920 }], { duration: 10, width: 540, height: 960 }), [1, true, true]);
+  eq('...and when the shape is the same too, it is a guess, and says so',
+    m([hi, { duration: 4, width: 640, height: 1136 }], { duration: 4, width: 320, height: 568 }), [0, false, true]);
+  eq('nothing of the right length is a guess at the most recent', m([{ duration: 30 }, { duration: 9 }], { duration: 4 }), [0, false, false]);
+  eq('a page that does not know the length cannot be matched', m([hi, b], { duration: 0 }), [0, false, false]);
+  eq('files that could not be read do not count as a match', m([null, hi], { duration: 4 }), [1, true, true]);
+}
+
+/* -------------------------------------------- what a file is, by its bytes */
+
+{
+  const bytes = (text) => Uint8Array.from(Buffer.from(text, 'latin1'));
+  const webp = bytes('RIFF\x24\x00\x00\x00WEBPVP8 '), png = bytes('\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'), jpg = bytes('\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01');
+  const box = (brand) => bytes('\x00\x00\x00\x20ftyp' + brand + '\x00\x00\x00\x00');
+  eq('the first bytes say what a file is',
+    [webp, png, jpg, bytes('GIF89a\x01\x00\x01\x00\x00\x00'), box('avif'), box('heic'), box('isom'), bytes('\x1a\x45\xdf\xa3\x00\x00\x00\x00\x00\x00\x00\x00')].map(S.sniffType),
+    ['image/webp', 'image/png', 'image/jpeg', 'image/gif', 'image/avif', 'image/heic', 'video/mp4', 'video/webm']);
+  eq('...and nothing, when they are not a kind known here', [bytes('%PDF-1.7 and so on'), bytes('<svg xmlns="x">'), bytes('abc')].map(S.sniffType), ['', '', '']);
+  eq('WebP that the address and the server both call PNG is saved as .webp',
+    S.nameForBytes('Snaffle/a/pic.png', webp, 'image/png'), 'Snaffle/a/pic.webp');
+  eq('...and a file with no extension gets the right one', S.nameForBytes('Snaffle/a/pic', jpg, 'application/octet-stream'), 'Snaffle/a/pic.jpg');
+  eq('a name that already matches is left alone', [S.nameForBytes('a/p.jpeg', jpg, ''), S.nameForBytes('a/p.png', png, 'image/webp')], ['a/p.jpeg', 'a/p.png']);
+  eq('one kind of MP4 file is never renamed to another',
+    ['clip.mov', 'clip.m4v', 'song.m4a'].map((n) => S.nameForBytes(n, box('isom'), 'video/mp4')), ['clip.mov', 'clip.m4v', 'song.m4a']);
+  eq('...but a picture named as a video is put right', S.nameForBytes('clip.mp4', webp, 'video/mp4'), 'clip.webp');
+  eq('bytes that say nothing leave it to what the server said',
+    [S.nameForBytes('doc.png', bytes('%PDF-1.7 and so on'), 'image/webp'), S.nameForKind('pic.jpg', '', 'image/png')], ['doc.webp', 'pic.png']);
+}
+
 /* ------------------------------------------------- naming Instagram files */
 
 {
   const link = (href) => ({ getAttribute: (k) => (k === 'href' ? href : null) });
-  const page = (address, tags, links) => ({
+  const page = (address, tags, links, car) => ({
+    // The row of slides the picture sits in, when the page has one.
+    carouselOf: () => car || null,
     location: new URL(address),
     document: {
       querySelector: (sel) => (tags || {})[sel] || null,
@@ -141,6 +197,15 @@ eq('any other name on disk is not believed (a test browser saves under ids)',
   eq('...and the address of the feed adds no picture number',
     info(page('https://www.instagram.com/?img_index=4'), { parentElement: inner }).index, '');
   eq('any other site is left alone', info(page('https://example.com/p/ABC/')), null);
+
+  // A post with several slides: the number comes from where the slide sits
+  // in its row, which is there in a feed too, where the address says nothing.
+  const third = { indexOf: () => 2, slide: {} };
+  eq('a slide is numbered from its place in the row of slides',
+    info(page('https://www.instagram.com/', null, null, third), { parentElement: inner }).name, 'bob_1-FEED9-3');
+  eq('...and whoever is stepping through a post says which slide it is on',
+    lift('content.js', '  const IG_POST = ', '  const hostToken = ', ['instagramInfo'], page('https://www.instagram.com/nasa/p/CODE/?img_index=2'))
+      .instagramInfo({}, 5).name, 'nasa-CODE-5');
 }
 
 /* ------------------------------------------------------------- url rewriting */
@@ -313,7 +378,7 @@ const bind = (code, mods) => Object.assign({ code, ctrl: false, alt: false, shif
 const click = (button, mods) => Object.assign({ button, ctrl: false, alt: false, shift: false, meta: false }, mods || {});
 
 eq('the default shortcuts raise no warning',
-  ['key', 'captureKey', 'galleryKey'].map((k) => S.keyWarning(S.DEFAULTS[k]).text).concat(S.mouseWarning(S.DEFAULTS.mouse).text), ['', '', '', '']);
+  ['key', 'captureKey', 'galleryKey', 'postKey'].map((k) => S.keyWarning(S.DEFAULTS[k]).text).concat(S.mouseWarning(S.DEFAULTS.mouse).text), ['', '', '', '', '']);
 eq('alt+d is flagged as the address bar, but allowed',
   [/address bar/.test(S.keyWarning(bind('KeyD', { alt: true })).text), S.keyWarning(bind('KeyD', { alt: true })).blocked], [true, false]);
 eq('ctrl+t is flagged as something Chrome never passes on',
@@ -436,7 +501,7 @@ const Pdf = require('../pdf.js');
   eq('every options flag has a default', flags.filter((k) => !(k in S.DEFAULTS)), []);
 
   // The three key bindings must not ship colliding defaults.
-  const sigs = ['key', 'captureKey', 'galleryKey'].map((k) => {
+  const sigs = ['key', 'captureKey', 'galleryKey', 'postKey'].map((k) => {
     const b = S.DEFAULTS[k];
     return [b.code, b.ctrl, b.alt, b.shift, b.meta].join('|');
   });

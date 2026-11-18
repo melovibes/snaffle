@@ -43,10 +43,11 @@ Pin the toolbar icon for a quick on/off switch and a reminder of your triggers.
 | Mouse | `Alt + Middle click` | save the media under the pointer |
 | Keyboard | `Alt + Shift + S` | full-page screenshot |
 | Keyboard | `Alt + Shift + I` | open the page media list |
+| Keyboard | `Alt + A` | save the whole post under the pointer, every slide of it |
 | Right-click menu | — | "Save with Snaffle" on images and video |
 | Toolbar popup | — | on/off switch, full-page capture, media list |
 
-Both are reassignable in the options page (toolbar icon → **Open settings**, or the Extensions page → **Details** → **Extension options**). Click the recorder box, then press the key combo or click with the mouse button you want. Either trigger can be turned off independently.
+All of them are reassignable in the options page (toolbar icon → **Open settings**, or the Extensions page → **Details** → **Extension options**). Click the recorder box, then press the key combo or click with the mouse button you want. Either trigger can be turned off independently.
 
 Triggers are suppressed while you are typing in a text field, and the click trigger swallows the follow-up click, `auxclick`, and context menu so the page does not navigate or open a tab.
 
@@ -92,6 +93,8 @@ That covers the cases plain segment-joining cannot:
 
 The toast shows progress, and **Escape cancels**. Files land as `user-statusid-720p.mp4`, the resolution taken from the track that was saved.
 
+**A download that goes quiet is not left hanging.** A connection can stay open and stop sending, which looks like a progress bar that has simply stopped. Snaffle watches every request a video job makes. After five seconds with nothing arriving the message changes to "Video download stalled at 84%. Waiting for the site..."; after fifteen the request is dropped and asked for again from the byte it had reached, not from the start, and the message counts the tries ("Trying again (2 of 5)"). The bytes already in hand are kept. Five tries in a row with nothing arriving and the job ends with a reason rather than waiting for ever. A file is only handed to the downloader once all of it is there: its size is checked against what the server gave and against the index inside the file itself.
+
 If the library cannot read a stream, Snaffle falls back to joining the best rendition's segments end to end, and the toast says so, because a joined file can show the wrong length in strict players. It will not do that when the audio is separate: a silent file presented as the whole video is worse than an honest failure.
 
 It refuses, with a reason, when a stream is live (it has no end), or is encrypted with DRM. DRM-protected services are not defeated by this and are not meant to be.
@@ -103,15 +106,26 @@ Turn the whole thing off with **Rebuild streamed video into one file** in option
 Instagram has no playlist. Each post's video is a set of whole files on Instagram's CDN, one per quality with no sound in it and one that is sound only, and the player fetches each a byte range at a time by adding `bytestart` and `byteend` to its address. Saving it means fetching the right two files whole and merging them.
 
 1. The same `webRequest` listener records those range requests (on `*.cdninstagram.com` and `*.fbcdn.net`), one record per file however many ranges are asked for.
-2. The files of one post share an id carried in the address, alongside each file's bitrate, its length and whether it is sound. Snaffle picks the post whose length matches the video you are pointing at, takes its highest-bitrate picture file and its sound file, and leaves the lower qualities alone. If two posts of the same length are loaded it takes the most recent and says the result is a best guess.
-3. The worker page asks for each file by its address with the byte range taken out, which returns the whole file. The rest of the address is signed and is passed through untouched. If the whole file is refused, it is fetched a range at a time, in order, and joined.
-4. Mediabunny merges picture and sound into one MP4 by copying them as they are. Nothing is re-encoded.
+2. The files of one post share an id carried in the address, alongside each file's bitrate, its length in whole seconds and whether it is sound. Posts of the wrong length are set aside. From each that is left Snaffle takes the highest-bitrate picture file and the sound file, and leaves the lower qualities alone.
+3. **Which video, when several are loaded.** Instagram loads the slides either side of the one on show ahead of time, and the next posts down a feed, so the video asked for last is often not the one you are looking at. Nothing in the page ties a video to its files: the element carries no id. What does tie them is length. The page knows the video's length to a fraction of a frame, and the first few thousand bytes of each file hold an index that gives the same figure (on a real reel the two matched to fourteen decimal places). So the worker page reads the start of each candidate and takes the one that runs exactly as long as the video you are pointing at, using the picture's proportions to separate two clips cut to the very same length. Only when that still leaves more than one is the most recent taken and the message marked a best guess.
+4. The worker page asks for each file by its address with the byte range taken out, which returns the whole file. The rest of the address is signed and is passed through untouched. If the whole file is refused, it is fetched a range at a time, in order, and joined.
+5. Mediabunny merges picture and sound into one MP4 by copying them as they are. Nothing is re-encoded.
 
-Files are named `account-shortcode-1080p.mp4`, and pictures saved from Instagram `account-shortcode.jpg` (with the picture's number added on a post that holds several), so a saved file can be traced back to its post.
+Files are named `account-shortcode-1080p.mp4`, and pictures saved from Instagram `account-shortcode.jpg`. On a post that holds several slides the slide's number is added to both (`account-shortcode-3.jpg`, `account-shortcode-4-1080p.mp4`), so a saved file can be traced back to its post.
 
 Instagram lays a cover picture exactly over each video and leaves it there while the video plays. Pointing at it counts as pointing at the video, once the video has started. Before that there is no video to save yet, and you get the cover picture.
 
-Two things to know. Instagram's best quality is usually VP9 video, which Chrome, VLC and current players handle but some older players and editors do not. And this has been checked against one public reel and a test copy of the site, not against every kind of post; stories, live video and anything that needs you signed in have not been tried.
+Two things to know. Instagram's best quality is usually VP9 video, which Chrome, VLC and current players handle but some older players and editors do not. And this has been checked against public reels and posts as a signed-out visitor sees them, and against a test copy of the site, not against every kind of post; stories, live video and anything that needs you signed in have not been tried. Signed out, Instagram shows only the first slides of a post, so a long post with several videos has been stepped through on the test copy only.
+
+## Saving a whole post
+
+`Alt + A` with the pointer on a post saves everything in it.
+
+On a post with several slides, the page only ever holds the slide on show and its neighbours, so Snaffle steps through the post for you: back to the first slide, forward one at a time to the last, saving each as it goes, then back to the slide you were on. Pictures are saved at once. Each video is handed to the worker page as it comes up, matched to its own files as described above, and downloads in the background, two at a time. One message covers the whole post: which slide it is on, then how the videos are getting on, then the outcome - "Saved all 7 from this post to Snaffle/instagram.com.", or how many were saved and what happened to each of the others. **Escape** stops it at the slide it has reached.
+
+Snaffle finds the slides and the buttons that step through them by how they are laid out (a row of items placed side by side, a frame one slide wide, a small control half-way up each side of it), not by Instagram's class names or the wording of its buttons, which change and differ by language.
+
+On a post with no slides, such as a post on X with four pictures, the same key saves every picture and video of any size inside the post the pointer is on. It leaves out avatars and icons, a post quoted inside it, and the posts around it. With the pointer on something that is not in a post at all, it saves that one thing, as `Alt + S` would.
 
 ## Full-page screenshots
 
@@ -161,6 +175,8 @@ Messages appear in the bottom-right corner of the page, and more than one can be
 - **A saved file** is named with the folder it went to, and has a **Show in folder** button.
 - **A video being rebuilt** keeps its own message with a progress bar and a **Cancel** button, while other grabs report beside it.
 - **A failure** says what the site did, and stays longer.
+- **A video download that has gone quiet** says so, with the try it is on, and goes back to its progress bar when bytes arrive again.
+- **The outcome of a video download is the one message that must not be missed**, since it comes when you have stopped watching. It stays up for fifteen seconds rather than three. Its time only runs while the page is in front, so one that arrives while you are in another tab is still there when you come back. If the page is reloaded or moves on while it is up, it is shown again on what the tab loads next; and if the tab has been closed, it is shown in the tab you are looking at.
 - Hovering a message keeps it from disappearing while you read it or reach for its button.
 
 The **Confirm each saved file** setting turns off the first kind only. Problems and downloads in progress are always shown, because silence after a failed grab would look like success.
@@ -202,7 +218,11 @@ Every address Snaffle works out is a guess about a server it does not control, s
 
 Bytes that exist only in the page (an encoded canvas, an inline SVG, a screenshot, a file recovered by step 2) are passed in chunks to the extension's worker page, which hands them to the downloader as a blob. They land in your folder like everything else, at any size.
 
-Once the server has said what a file really is, its extension is corrected to match: a `.jpg` address that serves WebP is saved as `.webp`.
+**A file is named for what it holds.** An address ending `.png` can serve WebP, and the server can call it `image/png` too, or nothing more helpful than "some bytes". So the extension comes from the file's first bytes, which say what it is whatever it is called. Before a download starts, Snaffle reads the first few dozen bytes of the same address (one small extra request per save) and names the file from those, falling back to the server's word only when the bytes are of no kind it knows. Files that reach the worker page as bytes (anything the page held or fetched) are named from the bytes themselves. One kind of MP4 file (`.mp4`, `.m4v`, `.mov`, `.m4a`) is never renamed to another, since the first bytes cannot tell those apart.
+
+There is a catch, found by checking what lands on disk: Chrome has the last word on a download's extension and makes it agree with the type the server declared, whatever name an extension asks for. So when a picture's bytes and its declared type disagree, asking for the right name is not enough. Snaffle fetches such a picture itself and saves it as what it is. That is done for pictures only; a mislabelled video is saved by the browser as usual, under whatever extension Chrome gives it, and the message reports the name the file really got.
+
+**A file under its own name is a finished file.** Chrome writes every download under a temporary name ending `.crdownload` and renames it at the last moment, so nothing watching the folder can pick up half a file. Snaffle cannot choose that temporary name, but it does not need to, and a test now checks the behaviour: while a file is arriving it is not there under its own name. Video that Snaffle rebuilds is complete in memory before the downloader is given a single byte.
 
 Nothing in this chain ever returns fetched bytes to a web page. The worker page only accepts instructions from the service worker; the single thing a page can send it is bytes to be saved.
 
@@ -252,9 +272,9 @@ pwsh -File tools/make-icons.ps1
 ```
 npm install
 npm run lint          # ESLint over every file
-npm test              # 158 offline checks, a second or two
-npm run test:browser  # 91 checks in headless Chromium, about ten minutes; needs ffprobe on the PATH
-npm run test:native   # 8 checks of the names and folders of saved files, about a minute
+npm test              # 183 offline checks, a second or two
+npm run test:browser  # 100 checks in headless Chromium, about twelve minutes; needs ffprobe on the PATH
+npm run test:native   # 14 checks of the names, types and folders of saved files, about two minutes
 npm run package       # build snaffle-<version>.zip, the files that ship and nothing else
 npm run shots         # retake the screenshots in docs/img
 npm run demo          # re-record docs/img/demo.gif; needs ffmpeg on the PATH
@@ -272,7 +292,7 @@ All three of lint, the offline checks and the browser checks run on GitHub for e
 
 A defect that is understood but not yet fixed goes in `KNOWN_FAILING` at the top of `test/browser/run.js` with a note. The run fails on anything outside that list, and also when a listed check starts passing, so the list cannot go stale. It is empty at the moment.
 
-Not covered by automation: real sites (they need a signed-in browser), a physical high-DPI display, the popup as Chrome shows it from the toolbar (it is tested opened as a page and pointed at a tab), the "Show in folder" buttons actually opening a folder, and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
+Not covered by automation: real sites (they need a signed-in browser; the layout the whole-post key relies on was read off the live site by hand and rebuilt as a fixture), a physical high-DPI display, the popup as Chrome shows it from the toolbar (it is tested opened as a page and pointed at a tab), the "Show in folder" buttons actually opening a folder, and the fresh copy injected into open tabs after an update (an unpacked extension does not come back from a reload under automation).
 
 ## Troubleshooting
 
@@ -292,6 +312,10 @@ When it recognizes your trigger, Snaffle hides `pointerdown` from the page and c
 2. **Check the combination matches exactly.** The trigger requires those modifiers and no others — `Ctrl + Alt + Middle click` does not fire a trigger set to `Alt + Middle click`, so Chrome handles it instead.
 3. **Look for a message in the corner.** A warning or an error means Snaffle saw the click. If you have turned confirmations off, a successful save is silent, so check the popup's "Recently saved" list instead.
 4. **Confirm it is on.** Toolbar icon, master switch, and the per-trigger on/off state.
+
+**"Video download stalled".** The site stopped sending part-way. Snaffle keeps what it has and asks for the rest again, up to five times; there is nothing to do but wait or press Cancel. If it gives up, the address it was given may have expired: play the video again for a moment and save it again.
+
+**The message says "best guess".** More than one loaded video fitted the one you pointed at, to the frame and in shape, so Snaffle took the most recent. Check the file is the video you meant.
 
 **A video on Instagram saves a picture instead of the video.** The video had not started when you pressed the key, so there was nothing but its cover picture. Let it play for a moment, then grab.
 

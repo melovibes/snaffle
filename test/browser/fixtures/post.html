@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Post fixture</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  article { margin: 16px; padding: 12px; border: 1px solid #ccc; width: 560px; }
+  .avatar { width: 40px; height: 40px; border-radius: 50%; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .grid img { width: 100%; height: 160px; object-fit: cover; display: block; }
+  .quoted { margin: 8px 0 0; width: 300px; }
+  .quoted img { width: 200px; height: 120px; }
+</style></head>
+<body>
+<!-- A post without slides: everything in it is in the page at once. Saving
+     the whole post means its three pictures, not the 40-pixel avatar, not the
+     picture in the post it quotes, and not the post next to it. -->
+<article id="one">
+  <img class="avatar" src="/img/40x40/999999/avatar.png" alt="">
+  <p>Three pictures from the weekend.</p>
+  <div class="grid">
+    <img id="a" src="/img/600x400/cc3300/first.png" alt="">
+    <img id="b" src="/img/600x400/00cc33/second.png" alt="">
+    <img id="c" src="/img/600x400/3300cc/third.png" alt="">
+  </div>
+  <article class="quoted">
+    <p>A post quoted inside it.</p>
+    <img id="q" src="/img/400x240/555555/quoted.png" alt="">
+  </article>
+</article>
+<article id="two">
+  <p>Somebody else's post.</p>
+  <img id="n" src="/img/600x400/cccc00/neighbour.png" alt="">
+</article>
+<p id="loose"><img id="alone" src="/img/300x200/0099aa/alone.png" alt=""></p>
+</body></html>

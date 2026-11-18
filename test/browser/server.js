@@ -123,17 +123,23 @@ function fakeHls(vid, file) {
 function start(port, peerPort, secure) {
   const log = [];
   let slowMs = 0;   // per-segment delay for /real and /guarded, set by a test
+  let slowAll = 0;  // delay before the bytes of a /media file, set by a test
+  const toStall = []; // patterns: the next request to match each is never answered
 
   const handler = (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1:' + port);
     const p = url.pathname;
-    log.push({ path: p, search: url.search, referer: req.headers.referer || '', t: Date.now() });
+    log.push({ path: p, search: url.search, referer: req.headers.referer || '', range: req.headers.range || '', t: Date.now() });
 
     const send = (status, type, body, extra) => {
       res.writeHead(status, Object.assign({ 'Content-Type': type, 'Cache-Control': 'no-store' }, extra || {}));
       res.end(body);
     };
     const CORS = { 'Access-Control-Allow-Origin': '*' };
+
+    // A connection that opens and then says nothing, the way a stuck one does.
+    const stuck = toStall.findIndex((re) => re.test(p));
+    if (stuck >= 0) { toStall.splice(stuck, 1); return; }
 
     let m;
 
@@ -149,6 +155,11 @@ function start(port, peerPort, secure) {
     // /noext/<w>x<h>/<hex> - same, but no extension and a caller-chosen type.
     if ((m = /^\/noext\/(\d+)x(\d+)\/([0-9a-f]{6})$/i.exec(p))) {
       return send(200, url.searchParams.get('ct') || 'image/png', solidPng(+m[1], +m[2], m[3]));
+    }
+    // /lie/<name>.<ext> - WebP bytes under another name, sent as whatever
+    // ?ct= says (image/png unless told otherwise). What a careless CDN does.
+    if (/^\/lie\/[^/]+$/.test(p)) {
+      return send(200, url.searchParams.get('ct') || 'image/png', fs.readFileSync(path.join(MEDIA, 'tiny.webp')), CORS);
     }
     // An "image" URL that answers 200 with a web page, like a hotlink landing page.
     if (/^\/htmlimg\//.test(p)) {
@@ -208,7 +219,15 @@ function start(port, peerPort, secure) {
     }
     if ((m = /^\/media\/([^/]+)$/.exec(p))) {
       const file = path.join(MEDIA, m[1]);
-      if (fs.existsSync(file)) return send(200, TYPES[path.extname(file)] || 'application/octet-stream', fs.readFileSync(file));
+      if (fs.existsSync(file)) {
+        const all = fs.readFileSync(file);
+        if (!slowAll) return send(200, TYPES[path.extname(file)] || 'application/octet-stream', all);
+        // Headers and a first piece at once, the rest after a wait: a
+        // download that is under way and not yet finished.
+        res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream', 'Content-Length': all.length, 'Cache-Control': 'no-store' });
+        res.write(all.subarray(0, Math.floor(all.length / 2)));
+        return setTimeout(() => res.end(all.subarray(Math.floor(all.length / 2))), slowAll);
+      }
     }
 
     // A CDN that serves video the way Instagram's does: each track is one
@@ -216,7 +235,10 @@ function start(port, peerPort, secure) {
     //   /o1/v/t2/f2/<set>/<name>.mp4?...&oh=<signature>&bytestart=&byteend=
     // The signature must arrive exactly as the page wrote it. The set
     // `strict` refuses a request for the whole file and hands out at most
-    // 50,000 bytes at a time, to exercise the range-by-range route.
+    // 50,000 bytes at a time, to exercise the range-by-range route. The set
+    // `stall` sends two fifths of a whole file and then goes quiet with the
+    // connection open, but serves ranges; `dead` does the same and also
+    // goes quiet on any range past the start, so nothing can finish.
     if ((m = /^\/o1\/v\/t2\/f2\/([a-z0-9]+)\/([a-z-]+)\.mp4$/.exec(p))) {
       if (!/[?&]oh=00_Af-x%2By(&|$)/.test(req.url)) return send(403, 'text/plain', 'bad signature', CORS);
       const alias = { 'v-other': 'v-lo', 'a-other': 'a' };
@@ -224,10 +246,17 @@ function start(port, peerPort, secure) {
       if (!fs.existsSync(file)) return send(404, 'text/plain', 'missing', CORS);
       const all = fs.readFileSync(file);
       const strict = m[1] === 'strict';
+      const stalling = m[1] === 'stall' || m[1] === 'dead';
       if (!url.searchParams.has('bytestart')) {
+        if (stalling) {
+          res.writeHead(200, Object.assign({ 'Content-Type': 'video/mp4', 'Content-Length': all.length, 'Cache-Control': 'no-store' }, CORS));
+          res.write(all.subarray(0, Math.floor(all.length * 0.4)));
+          return;                       // and never another byte
+        }
         return strict ? send(403, 'text/plain', 'ranges only', CORS) : send(200, 'video/mp4', all, CORS);
       }
       const from = Number(url.searchParams.get('bytestart'));
+      if (m[1] === 'dead' && from >= 5000) return;
       let to = Math.min(all.length - 1, Number(url.searchParams.get('byteend')));
       if (!(from >= 0) || from >= all.length) return send(416, 'text/plain', 'past the end', CORS);
       if (strict) to = Math.min(to, from + 49999);
@@ -235,7 +264,7 @@ function start(port, peerPort, secure) {
     }
     // A page at an Instagram-shaped address, for the naming rules.
     if (/^\/(?:[A-Za-z0-9._]+\/)?(?:reel|p)\/[A-Za-z0-9_-]+\/?$/.test(p)) {
-      const html = fs.readFileSync(path.join(FIXTURES, 'ig.html'), 'utf8')
+      const html = fs.readFileSync(path.join(FIXTURES, url.searchParams.has('carousel') ? 'ig-carousel.html' : 'ig.html'), 'utf8')
         .replace(/\{\{CDN\}\}/g, secure
           ? 'https://scontent-test-1.cdninstagram.com:' + secure.peerPort
           : 'http://scontent-test-1.cdninstagram.com:' + peerPort);
@@ -270,6 +299,8 @@ function start(port, peerPort, secure) {
       log,
       mark: () => log.length,
       slow: (ms) => { slowMs = ms; },
+      slowMedia: (ms) => { slowAll = ms; },
+      stallNext: (re) => { toStall.push(re); },
       since: (mark) => log.slice(mark),
       close: () => Promise.all([closed(server)].concat(tls ? [closed(tls)] : []))
     }));

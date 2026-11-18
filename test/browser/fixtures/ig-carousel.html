@@ -1,0 +1,155 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Carousel fixture</title>
+<style>
+  body { margin: 0; }
+  #post { position: relative; width: 320px; height: 568px; margin: 20px; background: #000; }
+  #frame { width: 320px; height: 568px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  #frame::-webkit-scrollbar { display: none; }
+  #holder { width: 1px; height: 568px; }
+  #row { position: relative; width: 1px; height: 568px; margin: 0; padding: 0; list-style: none; }
+  #row li { position: absolute; left: 0; top: 0; width: 320px; height: 568px; }
+  #row li img, #row li video, #row li .play { position: absolute; left: 0; top: 0; width: 320px; height: 568px; object-fit: cover; }
+  .step { position: absolute; top: 253px; width: 46px; height: 62px; border: 0; padding: 0; background: rgba(255, 255, 255, .7); }
+  #sound { position: absolute; right: 8px; bottom: 8px; width: 28px; height: 28px; border: 0; }
+  #more { margin: 20px; }
+</style></head>
+<body>
+<!-- A post with five slides, built the way the real one is (looked at in
+     November 2026): a row whose items are each placed by a sideways transform,
+     only the slide on show and its neighbours in the page, a marker one pixel
+     wide where the last slide ends, a frame the row scrolls in, and a button
+     at each side - labelled in German here, because the wording is not to be
+     relied on. Scrolling the frame by hand does not change the slide; only
+     the buttons do.
+
+     Slides 2 and 3 are videos of the same whole seconds (4.0 s and 4.4 s),
+     and the player loads the neighbour of the slide on show ahead of time, so
+     whichever was asked for last is often not the one being looked at.
+
+     Query: ?start=N opens on slide N. -->
+<div id="post">
+  <div id="frame" role="presentation"><div id="holder"><ul id="row"></ul></div></div>
+  <button id="sound" aria-label="Ton"></button>
+</div>
+<div id="more">
+  <a href="/someone/p/OTHER1/"><img id="other" src="/img/311x414/777777/other-post.png" alt=""></a>
+</div>
+<script>
+(async () => {
+  const q = new URLSearchParams(location.search);
+  const W = 320;
+  const CDN = '{{CDN}}/o1/v/t2/f2/m367/';
+  const efg = (o) => btoa(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const address = (file, tag, bitrate, asset, secs) => CDN + file + '.mp4?_nc_cat=1&efg=' +
+    efg({ vencode_tag: tag, bitrate, duration_s: secs, xpv_asset_id: asset }) + '&_nc_ht=x&oh=00_Af-x%2By&oe=6A1B2C3D';
+  const ask = async (u, a, b) => new Uint8Array(await (await fetch(u + '&bytestart=' + a + '&byteend=' + b)).arrayBuffer());
+  const V = 'ig.dash_r2evevp9-r1gen2vp9_q90', A = 'ig.dash_ln_heaac_vbr3_audio';
+
+  const slides = [
+    { src: '/img/640x1136/aa3311/slide-one.png' },
+    { video: address('v-hi', V, 400000, 111, 4), sound: address('a', A, 64000, 111, 4), cover: '/img/320x568/224466/cover-two.png' },
+    { video: address('v-b', V, 400000, 333, 4), sound: address('a-b', A, 64000, 333, 4), cover: '/img/320x568/446622/cover-three.png' },
+    { src: '/img/640x1136/11aa33/slide-four.png' },
+    { src: '/img/640x1136/3311aa/slide-five.png' }
+  ];
+  const state = { index: Math.min(slides.length, Math.max(1, Number(q.get('start')) || 1)) - 1, loaded: [], steps: 0 };
+  window.__car = state;
+
+  const row = document.getElementById('row');
+  const frame = document.getElementById('frame');
+  const post = document.getElementById('post');
+
+  // The player: a little of each file is asked for by range, the way the real
+  // one asks, and the picture is fed to the video element.
+  async function load(s, n) {
+    if (s.loading) return s.loading;
+    s.loading = (async () => {
+      const head = await ask(s.video, 0, 999);
+      await ask(s.sound, 0, 999);
+      const rest = await ask(s.video, 1000, 999999);
+      const ms = new MediaSource();
+      s.el.src = URL.createObjectURL(ms);
+      await new Promise((res, rej) => { ms.addEventListener('sourceopen', res, { once: true }); setTimeout(rej, 3000); });
+      const sb = ms.addSourceBuffer('video/mp4; codecs="vp09.00.10.08"');
+      const bytes = new Uint8Array(head.length + rest.length);
+      bytes.set(head, 0); bytes.set(rest, head.length);
+      await new Promise((res, rej) => { sb.addEventListener('updateend', res, { once: true }); sb.addEventListener('error', rej, { once: true }); sb.appendBuffer(bytes); });
+      ms.endOfStream();
+      await new Promise((res) => { if (s.el.readyState > 0) res(); else { s.el.addEventListener('loadedmetadata', res, { once: true }); setTimeout(res, 2000); } });
+      state.loaded.push(n + 1);
+    })().catch((e) => { state.error = String(e); });
+    return s.loading;
+  }
+
+  // Each slide's element is made once and kept, in or out of the page.
+  function item(n) {
+    const s = slides[n];
+    if (s.li) return s.li;
+    const li = document.createElement('li');
+    li.setAttribute('style', 'transform: translateX(' + n * W + 'px);');
+    if (s.video) {
+      s.el = document.createElement('video');
+      s.el.setAttribute('playsinline', '');
+      s.el.preload = 'none';
+      li.appendChild(s.el);
+      const img = document.createElement('img');
+      img.src = s.cover;
+      li.appendChild(img);
+      // A play button the size of the whole slide, as the real one has.
+      const play = document.createElement('div');
+      play.className = 'play';
+      play.setAttribute('role', 'button');
+      li.appendChild(play);
+    } else {
+      const img = document.createElement('img');
+      img.src = s.src;
+      li.appendChild(img);
+    }
+    s.li = li;
+    return li;
+  }
+
+  // One load at a time, so "asked for last" is the neighbour, every time.
+  let chain = Promise.resolve();
+  function render() {
+    row.textContent = '';
+    const end = document.createElement('li');
+    end.setAttribute('style', 'transform: translateX(' + (slides.length * W - 1) + 'px); width: 1px;');
+    end.style.height = '1px';
+    row.appendChild(end);
+    // The slide on show first, then its neighbours: that is the order the
+    // real player loads them in.
+    for (const n of [state.index, state.index - 1, state.index + 1]) {
+      if (n < 0 || n >= slides.length) continue;
+      row.appendChild(item(n));
+      if (slides[n].video) chain = chain.then(() => load(slides[n], n));
+    }
+    for (const b of post.querySelectorAll('.step')) b.remove();
+    const button = (label, left, to) => {
+      const b = document.createElement('button');
+      b.className = 'step';
+      b.setAttribute('aria-label', label);
+      b.style.left = left + 'px';
+      b.addEventListener('click', () => go(to));
+      post.appendChild(b);
+    };
+    if (state.index > 0) button('Zurück', 0, state.index - 1);
+    if (state.index < slides.length - 1) button('Weiter', W - 46, state.index + 1);
+    frame.scrollLeft = state.index * W;
+  }
+
+  function go(n) {
+    state.index = n;
+    state.steps++;
+    render();
+    const p = new URLSearchParams(location.search);
+    p.set('img_index', String(n + 1));
+    history.replaceState(null, '', location.pathname + '?' + p.toString());
+  }
+
+  render();
+  await chain;
+  document.title = 'Carousel fixture ready';
+})();
+</script>
+</body></html>

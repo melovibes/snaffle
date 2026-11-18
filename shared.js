@@ -14,6 +14,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     mouse: { enabled: true, button: 1, ctrl: false, alt: true, shift: false, meta: false },
     captureKey: { enabled: true, code: 'KeyS', ctrl: false, alt: true, shift: true, meta: false },
     galleryKey: { enabled: true, code: 'KeyI', ctrl: false, alt: true, shift: true, meta: false },
+    postKey: { enabled: true, code: 'KeyA', ctrl: false, alt: true, shift: false, meta: false },
     folder: 'Snaffle/{host}',
     template: '{name}.{ext}',
     captureThen: 'review',     // 'review' opens it to look at first; 'save' saves it straight away
@@ -25,6 +26,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     upgrade: true,
     preferLink: true,
     streamAssembly: true,
+    stallSeconds: 15,          // a video download with no bytes for this long is treated as stuck
     posterFallback: true,
     saveAs: false,
     toast: true,
@@ -233,7 +235,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
 
   const MIME_EXT = {
     'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
-    'image/avif': 'avif', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/x-icon': 'ico',
+    'image/avif': 'avif', 'image/heic': 'heic', 'image/svg+xml': 'svg', 'image/bmp': 'bmp', 'image/x-icon': 'ico',
     'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
     'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/wav': 'wav', 'audio/ogg': 'ogg'
   };
@@ -258,22 +260,73 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     return had ? filename.slice(0, -had.length) + real : filename + '.' + real;
   }
 
+  // What a file is, read from its first bytes rather than from what its
+  // address or its server calls it. A server can say image/png, or nothing
+  // useful at all, over bytes that are WebP; the bytes do not lie. Returns a
+  // content type, or '' for anything not recognised.
+  function sniffType(bytes) {
+    const b = bytes || [];
+    if (b.length < 12) return '';
+    const at = (i, text) => { for (let k = 0; k < text.length; k++) if (b[i + k] !== text.charCodeAt(k)) return false; return true; };
+    if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image/jpeg';
+    if (b[0] === 0x89 && at(1, 'PNG\r\n')) return 'image/png';
+    if (at(0, 'GIF87a') || at(0, 'GIF89a')) return 'image/gif';
+    if (at(0, 'RIFF') && at(8, 'WEBP')) return 'image/webp';
+    if (at(0, 'RIFF') && at(8, 'WAVE')) return 'audio/wav';
+    if (at(0, 'BM') && b[6] === 0 && b[7] === 0 && b[8] === 0 && b[9] === 0) return 'image/bmp';
+    if (at(0, 'OggS')) return 'audio/ogg';
+    if (at(0, 'ID3')) return 'audio/mpeg';
+    if (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3) return 'video/webm';
+    if (at(4, 'ftyp')) {
+      const brand = String.fromCharCode(b[8], b[9], b[10], b[11]).toLowerCase();
+      if (brand === 'avif' || brand === 'avis') return 'image/avif';
+      if (/^(heic|heix|heim|heis|hevc|hevx|mif1|msf1)$/.test(brand)) return 'image/heic';
+      if (brand === 'qt  ') return 'video/quicktime';
+      if (brand === 'm4a ' || brand === 'm4b ') return 'audio/mp4';
+      return 'video/mp4';
+    }
+    return '';
+  }
+
+  // Extensions that are all the same kind of container. Telling them apart
+  // takes more than the first bytes, so one is never swapped for another.
+  const MP4_FAMILY = /^(mp4|m4v|m4a|m4b|m4s|mov|3gp)$/i;
+
+  // The name a file should carry given its first bytes, falling back to what
+  // the server said when the bytes are not of a kind recognised here.
+  function nameForBytes(filename, bytes, mime) {
+    return nameForKind(filename, sniffType(bytes), mime);
+  }
+
+  // The same, when the bytes have already been read: `real` is what
+  // sniffType() said of them, or '' if it could not say.
+  function nameForKind(filename, real, mime) {
+    if (!real) return nameForMime(filename, mime);
+    const had = (/\.([a-z0-9]{1,5})$/i.exec(filename) || [])[1] || '';
+    if (/^(video|audio)\/(mp4|quicktime)$/.test(real) && MP4_FAMILY.test(had)) return filename;
+    if (real === 'video/webm' && /^(webm|mkv|mka|weba)$/i.test(had)) return filename;
+    return nameForMime(filename, real);
+  }
+
   // The path a file really landed at, in the form it was asked for. When a
   // file of that name is already there, Chrome saves the new one beside it as
   // "name (1).ext", and the message should say so. `absolute` is where Chrome
-  // says the file is. Anything other than that one pattern is left as asked:
-  // the folder part is ours, and only the numbered suffix is Chrome's.
+  // says the file is. A name on disk that is not recognisably this file's is
+  // left out of it: the folder part is ours, and a test browser saves under ids.
   function landedName(intended, absolute) {
     const path = String(intended || '');
     const want = path.split('/').pop();
     const got = String(absolute || '').split(/[\\/]/).pop();
     if (!want || !got || got === want) return path;
-    const dot = want.lastIndexOf('.');
-    const stem = dot > 0 ? want.slice(0, dot) : want;
-    const ext = dot > 0 ? want.slice(dot) : '';
-    const numbered = got.startsWith(stem + ' (') && got.endsWith(')' + ext) &&
-      /^\d+$/.test(got.slice(stem.length + 2, got.length - ext.length - 1));
-    return numbered ? path.slice(0, path.length - want.length) + got : path;
+    const split = (name) => { const dot = name.lastIndexOf('.'); return dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, '']; };
+    const stem = split(want)[0];
+    // Chrome has the last word on the extension too: it makes it agree with
+    // the type the file was sent as. So the name on disk is believed when it
+    // is the name asked for, numbered or not, under whatever extension.
+    let gotStem = split(got)[0];
+    if (gotStem !== stem && !/ \(\d+\)$/.test(gotStem) && / \(\d+\)$/.test(got)) gotStem = got;   // "file (3)", no extension
+    const numbered = gotStem.startsWith(stem + ' (') && /^\d+\)$/.test(gotStem.slice(stem.length + 2));
+    return gotStem === stem || numbered ? path.slice(0, path.length - want.length) + got : path;
   }
 
   const sizeText = (bytes) => (bytes >= 1048576
@@ -285,7 +338,7 @@ var SnaffleShared = (typeof SnaffleShared !== 'undefined' && SnaffleShared) || (
     merge, overridesOf, effective, toStore,
     BUTTONS, keyLabel, mouseLabel, keyWarning, mouseWarning,
     sanitizeSegment, applyTemplate, buildPath,
-    MIME_EXT, cleanMime, notMedia, nameForMime, sizeText, landedName
+    MIME_EXT, cleanMime, notMedia, nameForMime, sniffType, nameForBytes, nameForKind, sizeText, landedName
   };
 })();
 

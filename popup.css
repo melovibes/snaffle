@@ -88,6 +88,7 @@ body.off .keys, body.off .acts { opacity: 0.45; }
 
 .keys { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .keys .or { color: var(--muted); font-size: 12px; }
+.keys + .keys { margin-top: 6px; }
 .key.disabled code { text-decoration: line-through; opacity: 0.55; }
 
 .acts { display: grid; gap: 6px; }

@@ -15,7 +15,8 @@ const TRIGGERS = [
   { field: 'key', kind: 'key', enabled: 'keyEnabled', rec: 'keyRec', hint: 'keyHint' },
   { field: 'mouse', kind: 'mouse', enabled: 'mouseEnabled', rec: 'mouseRec', hint: 'mouseHint' },
   { field: 'captureKey', kind: 'key', enabled: 'captureEnabled', rec: 'captureRec', hint: 'captureHint' },
-  { field: 'galleryKey', kind: 'key', enabled: 'galleryEnabled', rec: 'galleryRec', hint: 'galleryHint' }
+  { field: 'galleryKey', kind: 'key', enabled: 'galleryEnabled', rec: 'galleryRec', hint: 'galleryHint' },
+  { field: 'postKey', kind: 'key', enabled: 'postEnabled', rec: 'postRec', hint: 'postHint' }
 ];
 
 let cfg = S.effective(null);

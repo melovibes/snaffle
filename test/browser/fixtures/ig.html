@@ -9,7 +9,8 @@
 <body>
 <!-- Built the way the real player is: the video at the bottom, then a group,
      then the cover picture exactly over it, then a transparent layer on top.
-     Query: ?strict the CDN refuses whole files; ?second=N a second post of N
+     Query: ?strict the CDN refuses whole files; ?set=stall or dead the CDN goes
+     quiet part-way through a whole file (dead: through ranges too); ?second=N a second post of N
      seconds is asked for afterwards; ?idle nothing has been played yet;
      ?canon=name the page declares its canonical address under that account. -->
 <div class="player" id="player">
@@ -32,7 +33,7 @@
   window.__ig = state;
   if (q.has('idle')) { document.title = 'Instagram fixture ready'; return; }
 
-  const CDN = '{{CDN}}/o1/v/t2/f2/' + (q.has('strict') ? 'strict' : 'm367') + '/';
+  const CDN = '{{CDN}}/o1/v/t2/f2/' + (q.get('set') || (q.has('strict') ? 'strict' : 'm367')) + '/';
   const efg = (o) => btoa(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   // The signature holds a character that must reach the server exactly as written.
   const address = (file, tag, bitrate, asset, secs) => CDN + file + '.mp4?_nc_cat=1&efg=' +

@@ -172,6 +172,28 @@ G12 (WebP named `.jpg`) has a fix that cannot be observed here: Chrome skips an 
 
 The rest of this document is the original Phase 0 record.
 
+## Stalls, lost messages, the wrong slide, wrong file types, whole posts (v1.6.0)
+
+Six requests from use, all from one run of saving Instagram posts. What each turned out to be:
+
+| Asked for | What was found | What was done |
+| --- | --- | --- |
+| Retry stalled video downloads | Nothing timed a request out. A connection that stayed open and sent nothing hung the job for good; reloading the page only helped because it reset the connection. | Every request a job makes is watched. Quiet for a third of the limit: the message says stalled. Quiet for the limit (15 s): the request is dropped and the rest asked for from the last byte, up to five times in a row. Applies to playlist streams as well. |
+| Always show a Saved message | The message was sent once, to the page as it was at that moment, and stayed 6 seconds whether or not anyone was looking. A tab in the background, a page reloaded or left, or a tab closed all lost it. | It stays 15 seconds, timed only while the page is in front; it is handed back and shown again if its page goes away; it goes to the front tab if its own has closed. |
+| Match the video to the slide | Instagram loads the slides next to the one on show (seen on a real post: slide 2's video was fully loaded while slide 1 was showing), so "most recently asked for" was often the neighbour. The video element carries no id of any kind: only class, playsinline, preload, src and style. | Matched by exact length instead. On a real reel the page said 63.46346346346346 s and the index at the start of the file added up to 63.46346346346346 s. Shape breaks ties. |
+| Use the real file type | The name came from the address, corrected by the server's content type, and both can be wrong. | The first bytes decide. See below for what Chrome does about it. |
+| One key for a whole post | The page holds only the slide on show and its neighbours, and moving the scroll position by script does not change the slide; only the buttons do. | `Alt + A` steps through with the post's own buttons, found by layout rather than by class name or label, and puts the post back. |
+| Write files only when complete | Already so, and not Snaffle's doing: Chrome writes under `name.crdownload` and renames at the end. Not previously checked. | A check now watches the folder during a slow download. A rebuilt video is also checked against its own index before it is saved. |
+
+Two things only the on-disk checks could show:
+
+- **Chrome overrides a download's extension to agree with the declared content type.** A file asked for as `photo.webp` and served as `image/png` lands as `photo.png`, and a PNG served as `image/webp` and asked for as `.png` lands as `.webp`. The first version of the fix asked for the right name and reported it, and the file on disk was called something else: the same class of fault as 1.5.1, caught before release this time. Mislabelled pictures are now fetched and saved as blobs of their true type, and every message takes the name from where the file landed.
+- **A background tab reports itself visible under the automation library**, so the check that a message waits for its tab to come back to the front had nothing to observe there. It runs in the native harness, where the tab is really hidden.
+
+New checks: I09 (right video of several), I10 and I11 (a stall recovered, a stall given up), S17 (a stuck piece of a playlist stream), S18 and S19 (the message survives a reload and a closed tab), W01 to W03 (whole post: slides, Escape, a post without slides), and on disk N09 to N14 (true file types, nothing half-written, a whole post's file names, the waiting message).
+
+Checked against the real site, signed out, read-only: the layout of a post's slides and buttons, that neighbours load ahead, and the length match. Not checked there: stepping through a long post of several videos, since signed out the site shows only the first slides. That path runs against a test copy built to the layout observed.
+
 ## Defects, ranked for Phase 1
 
 ### Broken outright

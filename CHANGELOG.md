@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.6.0
+
+- **A stalled video download recovers by itself.** A connection that stays open and stops sending is noticed. The message says the download has stalled, the request is dropped and asked for again from the byte it had reached, and the tries are counted in the message. After five tries with nothing arriving it ends with a reason. This covers Instagram video and playlist streams alike.
+- **The outcome of a video download always reaches you.** It stays up for fifteen seconds, its time only runs while the page is in front, it is shown again if the page is reloaded or moves on while it is up, and it goes to the tab you are looking at if the one that asked has been closed.
+- **The right video in a post of several.** Instagram loads the slides next to the one on show, so the video asked for last was often the wrong one and the save was marked a best guess. The video is now matched to its files by its exact length, read from the start of each file, and by its shape.
+- **Files are named for what they hold.** The extension comes from the file's first bytes, not from its address or what the server calls it, so WebP served as `.png` is saved as `.webp`.
+- **One key saves a whole post** (`Alt + A`, changeable in settings). On a post with several slides Snaffle steps through them all, saves each picture and video, numbers the files by slide, and puts the post back on the slide it was showing. On a post without slides it saves every picture and video in the post.
+- Up to two videos are rebuilt at once; the rest wait their turn.
+- A rebuilt video is only saved once all of it has arrived: its size is checked against the file's own index.
+- A test now checks that a file still arriving is never present under its finished name (Chrome keeps it under a `.crdownload` name until it is complete).
+
 ## 1.5.1
 
 - Rebuilt videos, screenshots and pictures held in the page were saved loose in Downloads under a random name, while the message gave the name and folder they should have had. They now go where the message says. Direct picture downloads were not affected.
